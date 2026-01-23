@@ -6,7 +6,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .causal_conv_2d import make_conv2d
-from .causality_axis import CausalityAxis
+from ..config import CausalityAxis
 from .normalization import NormType, build_normalization_layer
 
 LRELU_SLOPE = 0.1

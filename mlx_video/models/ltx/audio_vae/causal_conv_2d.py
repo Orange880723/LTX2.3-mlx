@@ -5,7 +5,7 @@ from typing import Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from .causality_axis import CausalityAxis
+from ..config import CausalityAxis
 
 
 def _pair(x: Union[int, Tuple[int, int]]) -> Tuple[int, int]:

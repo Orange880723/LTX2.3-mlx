@@ -3,7 +3,7 @@
 from .attention import AttentionType, AttnBlock, make_attn
 from .audio_vae import AudioDecoder, decode_audio
 from .causal_conv_2d import CausalConv2d, make_conv2d
-from .causality_axis import CausalityAxis
+from ..config import CausalityAxis
 from .downsample import Downsample, build_downsampling_path
 from .normalization import NormType, PixelNorm, build_normalization_layer
 from .ops import AudioLatentShape, AudioPatchifier, PerChannelStatistics

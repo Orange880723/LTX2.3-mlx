@@ -6,7 +6,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .attention import AttentionType, make_attn
-from .causality_axis import CausalityAxis
+from ..config import CausalityAxis
 from .normalization import NormType
 from .resnet import ResnetBlock
 

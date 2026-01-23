@@ -1,14 +1,15 @@
 """Audio VAE encoder and decoder for LTX-2."""
 
-from typing import Set, Tuple
+from typing import Dict
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
-
+from mlx_vlm.models.base import check_array_shape
+from ..config import AudioDecoderModelConfig
 from .attention import AttentionType, make_attn
 from .causal_conv_2d import make_conv2d
-from .causality_axis import CausalityAxis
-from .downsample import build_downsampling_path
+from ..config import CausalityAxis
 from .normalization import NormType, build_normalization_layer
 from .ops import AudioLatentShape, AudioPatchifier, PerChannelStatistics
 from .resnet import ResnetBlock
@@ -67,22 +68,7 @@ class AudioDecoder(nn.Module):
 
     def __init__(
         self,
-        *,
-        ch: int = 128,
-        out_ch: int = 2,
-        ch_mult: Tuple[int, ...] = (1, 2, 4),
-        num_res_blocks: int = 2,
-        attn_resolutions: Set[int] = None,
-        resolution: int = 256,
-        z_channels: int = 8,
-        norm_type: NormType = NormType.PIXEL,
-        causality_axis: CausalityAxis = CausalityAxis.HEIGHT,
-        dropout: float = 0.0,
-        mid_block_add_attention: bool = True,
-        sample_rate: int = 16000,
-        mel_hop_length: int = 160,
-        is_causal: bool = True,
-        mel_bins: int | None = None,
+        config: AudioDecoderModelConfig,
     ) -> None:
         """
         Initialize the AudioDecoder.
@@ -105,85 +91,131 @@ class AudioDecoder(nn.Module):
         """
         super().__init__()
 
-        if attn_resolutions is None:
-            attn_resolutions = {8, 16, 32}
-
-        # Internal behavioral defaults
-        resamp_with_conv = True
-        attn_type = AttentionType.VANILLA
 
         # Per-channel statistics for denormalizing latents
         # Uses ch (base channel count) to match the patchified latent dimension
         # Input latent shape: (B, z_channels, T, latent_mel_bins) = (B, 8, T, 16)
         # After patchify: (B, T, z_channels * latent_mel_bins) = (B, T, 128)
         # ch=128 matches this dimension, so use ch for per_channel_statistics
-        self.per_channel_statistics = PerChannelStatistics(latent_channels=ch)
-        self.sample_rate = sample_rate
-        self.mel_hop_length = mel_hop_length
-        self.is_causal = is_causal
-        self.mel_bins = mel_bins
+        self.per_channel_statistics = PerChannelStatistics(latent_channels=config.ch)
+        self.sample_rate = config.sample_rate
+        self.mel_hop_length = config.mel_hop_length
+        self.is_causal = config.is_causal
+        self.mel_bins = config.mel_bins
 
         self.patchifier = AudioPatchifier(
             patch_size=1,
             audio_latent_downsample_factor=LATENT_DOWNSAMPLE_FACTOR,
-            sample_rate=sample_rate,
-            hop_length=mel_hop_length,
-            is_causal=is_causal,
+            sample_rate=config.sample_rate,
+            hop_length=config.mel_hop_length,
+            is_causal=config.is_causal,
         )
 
-        self.ch = ch
+        self.ch = config.ch
         self.temb_ch = 0
-        self.num_resolutions = len(ch_mult)
-        self.num_res_blocks = num_res_blocks
-        self.resolution = resolution
-        self.out_ch = out_ch
-        self.give_pre_end = False
-        self.tanh_out = False
-        self.norm_type = norm_type
-        self.z_channels = z_channels
-        self.channel_multipliers = ch_mult
-        self.attn_resolutions = attn_resolutions
-        self.causality_axis = causality_axis
-        self.attn_type = attn_type
+        self.num_resolutions = len(config.ch_mult)
+        self.num_res_blocks = config.num_res_blocks
+        self.resolution = config.resolution
+        self.out_ch = config.out_ch
+        self.give_pre_end = config.give_pre_end
+        self.tanh_out = config.tanh_out
+        self.norm_type = config.norm_type
+        self.z_channels = config.z_channels
+        self.channel_multipliers = config.ch_mult
+        self.attn_resolutions = config.attn_resolutions
+        self.causality_axis = config.causality_axis
+        self.attn_type = config.attn_type
 
-        base_block_channels = ch * self.channel_multipliers[-1]
-        base_resolution = resolution // (2 ** (self.num_resolutions - 1))
-        self.z_shape = (1, z_channels, base_resolution, base_resolution)
+        base_block_channels = config.ch * self.channel_multipliers[-1]
+        base_resolution = config.resolution // (2 ** (self.num_resolutions - 1))
+        self.z_shape = (1, config.z_channels, base_resolution, base_resolution)
 
         self.conv_in = make_conv2d(
-            z_channels, base_block_channels, kernel_size=3, stride=1, causality_axis=self.causality_axis
+            config.z_channels, base_block_channels, kernel_size=3, stride=1, causality_axis=self.causality_axis
         )
 
         self.mid = build_mid_block(
             channels=base_block_channels,
             temb_channels=self.temb_ch,
-            dropout=dropout,
+            dropout=config.dropout,
             norm_type=self.norm_type,
             causality_axis=self.causality_axis,
             attn_type=self.attn_type,
-            add_attention=mid_block_add_attention,
+            add_attention=config.mid_block_add_attention,
         )
 
         self.up, final_block_channels = build_upsampling_path(
-            ch=ch,
-            ch_mult=ch_mult,
+            ch=config.ch,
+            ch_mult=config.ch_mult,
             num_resolutions=self.num_resolutions,
-            num_res_blocks=num_res_blocks,
-            resolution=resolution,
+            num_res_blocks=config.num_res_blocks,
+            resolution=config.resolution,
             temb_channels=self.temb_ch,
-            dropout=dropout,
+            dropout=config.dropout,
             norm_type=self.norm_type,
             causality_axis=self.causality_axis,
             attn_type=self.attn_type,
-            attn_resolutions=attn_resolutions,
-            resamp_with_conv=resamp_with_conv,
+            attn_resolutions=config.attn_resolutions,
+            resamp_with_conv=config.resamp_with_conv,
             initial_block_channels=base_block_channels,
         )
 
         self.norm_out = build_normalization_layer(final_block_channels, normtype=self.norm_type)
         self.conv_out = make_conv2d(
-            final_block_channels, out_ch, kernel_size=3, stride=1, causality_axis=self.causality_axis
+            final_block_channels, config.out_ch, kernel_size=3, stride=1, causality_axis=self.causality_axis
         )
+
+    def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        """Sanitize audio VAE weight names from PyTorch format to MLX format.
+
+        Args:
+            weights: Dictionary of weights with PyTorch naming
+
+        Returns:
+            Dictionary with MLX-compatible naming for audio VAE decoder
+        """
+        sanitized = {}
+
+        for key, value in weights.items():
+            new_key = key
+
+            # Handle audio_vae.decoder weights
+            if key.startswith("audio_vae.decoder."):
+                new_key = key.replace("audio_vae.decoder.", "")
+            elif key.startswith("audio_vae.per_channel_statistics."):
+                # Map per-channel statistics
+                if "mean-of-means" in key:
+                    new_key = "per_channel_statistics.mean_of_means"
+                elif "std-of-means" in key:
+                    new_key = "per_channel_statistics.std_of_means"
+                else:
+                    continue  # Skip other statistics keys
+            else:
+                continue  # Skip non-decoder keys
+
+            # Handle Conv2d weight shape conversion
+            # PyTorch: (out_channels, in_channels, H, W)
+            # MLX: (out_channels, H, W, in_channels)
+            if "conv" in new_key.lower() and "weight" in new_key and value.ndim == 4:
+                value = value if check_array_shape(value) else mx.transpose(value, (0, 2, 3, 1))
+
+            sanitized[new_key] = value
+
+        return sanitized
+
+    @classmethod
+    def from_pretrained(cls, model_path: Path) -> "AudioDecoder":
+        """Load audio VAE decoder from pretrained model."""
+        from mlx_video.models.ltx.config import AudioDecoderModelConfig
+        import json
+
+        config = AudioDecoderModelConfig.from_dict(json.load(open(model_path / "config.json")))
+        decoder = cls(config)
+        weights = mx.load(str(model_path / "model.safetensors"))
+        # weights = decoder.sanitize(weights)
+        decoder.load_weights(list(weights.items()), strict=True)
+        return decoder
+
 
     def __call__(self, sample: mx.array) -> mx.array:
         """

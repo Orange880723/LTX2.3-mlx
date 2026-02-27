@@ -1449,5 +1449,1264 @@ class TestWan21Convert:
         assert d["sample_shift"] == 5.0
 
 
+# ---------------------------------------------------------------------------
+# Shared Sigma Schedule Tests
+# ---------------------------------------------------------------------------
+
+
+class TestComputeSigmas:
+    """Tests for the shared _compute_sigmas helper."""
+
+    def test_length(self):
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+        sigmas = _compute_sigmas(20, shift=5.0)
+        assert len(sigmas) == 21  # num_steps + terminal
+
+    def test_terminal_zero(self):
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+        sigmas = _compute_sigmas(10, shift=1.0)
+        assert sigmas[-1] == 0.0
+
+    def test_starts_at_one(self):
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+        sigmas = _compute_sigmas(20, shift=5.0)
+        np.testing.assert_allclose(sigmas[0], 1.0, atol=1e-6)
+
+    def test_decreasing(self):
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+        sigmas = _compute_sigmas(20, shift=5.0)
+        assert np.all(np.diff(sigmas) <= 0)
+
+    def test_matches_official_wan22(self):
+        """Sigma schedule should match the official Wan2.2 get_sampling_sigmas."""
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+        steps, shift = 50, 5.0
+        sigmas = _compute_sigmas(steps, shift)
+        # Official: sigma = linspace(1, 0, steps+1)[:steps]; sigma = shift*sigma/(1+(shift-1)*sigma)
+        official = np.linspace(1, 0, steps + 1)[:steps]
+        official = shift * official / (1 + (shift - 1) * official)
+        official = np.append(official, 0.0).astype(np.float32)
+        np.testing.assert_allclose(sigmas, official, atol=1e-6)
+
+    def test_shift_one_is_linear(self):
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+        sigmas = _compute_sigmas(10, shift=1.0)
+        # With shift=1, f(sigma)=sigma, so schedule is linear from 1 to 0
+        expected = np.linspace(1, 0, 11).astype(np.float32)
+        np.testing.assert_allclose(sigmas, expected, atol=1e-6)
+
+    def test_all_schedulers_same_sigmas(self):
+        """All three schedulers should produce identical sigma schedules."""
+        from mlx_video.models.wan.scheduler import (
+            FlowDPMPP2MScheduler,
+            FlowMatchEulerScheduler,
+            FlowUniPCScheduler,
+        )
+        scheds = [
+            FlowMatchEulerScheduler(1000),
+            FlowDPMPP2MScheduler(1000),
+            FlowUniPCScheduler(1000),
+        ]
+        for s in scheds:
+            s.set_timesteps(20, shift=5.0)
+        mx.eval(*[s.sigmas for s in scheds])
+        ref = np.array(scheds[0].sigmas)
+        for s in scheds[1:]:
+            np.testing.assert_allclose(np.array(s.sigmas), ref, atol=1e-6)
+
+    def test_all_schedulers_same_timesteps(self):
+        from mlx_video.models.wan.scheduler import (
+            FlowDPMPP2MScheduler,
+            FlowMatchEulerScheduler,
+            FlowUniPCScheduler,
+        )
+        scheds = [
+            FlowMatchEulerScheduler(1000),
+            FlowDPMPP2MScheduler(1000),
+            FlowUniPCScheduler(1000),
+        ]
+        for s in scheds:
+            s.set_timesteps(30, shift=12.0)
+        mx.eval(*[s.timesteps for s in scheds])
+        ref = np.array(scheds[0].timesteps)
+        for s in scheds[1:]:
+            np.testing.assert_allclose(np.array(s.timesteps), ref, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# DPM++ 2M Scheduler Tests
+# ---------------------------------------------------------------------------
+
+
+class TestFlowDPMPP2MScheduler:
+    def test_initialization(self):
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        assert sched.num_train_timesteps == 1000
+        assert sched.lower_order_final is True
+
+    def test_set_timesteps(self):
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(20, shift=5.0)
+        mx.eval(sched.timesteps, sched.sigmas)
+        assert sched.timesteps.shape == (20,)
+        assert sched.sigmas.shape == (21,)
+
+    def test_step_index_increments(self):
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(5, shift=1.0)
+        sample = mx.ones((1, 4, 1, 2, 2))
+        vel = mx.zeros_like(sample)
+        assert sched._step_index == 0
+        sched.step(vel, sched.timesteps[0], sample)
+        assert sched._step_index == 1
+        sched.step(vel, sched.timesteps[1], sample)
+        assert sched._step_index == 2
+
+    def test_reset(self):
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(5, shift=1.0)
+        sample = mx.ones((1, 1, 1, 1, 1))
+        sched.step(mx.zeros_like(sample), 0, sample)
+        sched.reset()
+        assert sched._step_index == 0
+        assert sched._prev_x0 is None
+
+    def test_full_loop_finite(self):
+        """Full loop with constant velocity should produce finite output."""
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(10, shift=1.0)
+        sample = mx.ones((1, 2, 1, 2, 2))
+        for i in range(10):
+            vel = mx.ones_like(sample) * 0.1
+            sample = sched.step(vel, sched.timesteps[i], sample)
+            mx.eval(sample)
+        assert np.isfinite(np.array(sample)).all()
+
+    def test_first_step_is_first_order(self):
+        """First step should use 1st-order (no prev_x0 available)."""
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(10, shift=5.0)
+        sample = mx.random.normal((1, 4, 2, 4, 4))
+        vel = mx.random.normal(sample.shape)
+        # Before first step, no prev_x0
+        assert sched._prev_x0 is None
+        result = sched.step(vel, sched.timesteps[0], sample)
+        mx.eval(result)
+        # After first step, prev_x0 should be set
+        assert sched._prev_x0 is not None
+
+    def test_second_step_uses_correction(self):
+        """After first step, DPM++ should have stored prev_x0 for correction."""
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(10, shift=5.0)
+        sample = mx.random.normal((1, 4, 1, 2, 2))
+        vel = mx.random.normal(sample.shape)
+        # Step 1
+        sample = sched.step(vel, sched.timesteps[0], sample)
+        mx.eval(sample)
+        x0_after_first = sched._prev_x0
+        # Step 2
+        vel = mx.random.normal(sample.shape)
+        sample = sched.step(vel, sched.timesteps[1], sample)
+        mx.eval(sample)
+        # prev_x0 should have been updated
+        x0_after_second = sched._prev_x0
+        assert x0_after_second is not None
+        # The stored x0 should differ from the first step's
+        assert not np.allclose(np.array(x0_after_first), np.array(x0_after_second), atol=1e-6)
+
+    def test_denoise_to_target(self):
+        """Perfect oracle should denoise to target with any solver."""
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(20, shift=5.0)
+        target = mx.zeros((1, 2, 1, 4, 4))
+        latents = mx.random.normal(target.shape)
+        for i in range(20):
+            sigma = float(sched.sigmas[i].item())
+            v = latents / max(sigma, 1e-6)  # perfect velocity for target=0
+            latents = sched.step(v, sched.timesteps[i], latents)
+            mx.eval(latents)
+        np.testing.assert_allclose(np.array(latents), 0.0, atol=1e-3)
+
+    @pytest.mark.parametrize("steps", [5, 10, 20, 50])
+    def test_various_step_counts(self, steps):
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(steps, shift=5.0)
+        mx.eval(sched.timesteps, sched.sigmas)
+        assert sched.timesteps.shape == (steps,)
+        assert sched.sigmas.shape == (steps + 1,)
+
+    def test_terminal_sigma_produces_x0(self):
+        """When sigma_next=0 the scheduler should return x0 directly."""
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+        sched = FlowDPMPP2MScheduler()
+        sched.set_timesteps(5, shift=1.0)
+        sample = mx.ones((1, 1, 1, 1, 1)) * 3.0
+        vel = mx.ones_like(sample) * 2.0
+        # Run through all steps; the last step has sigma_next=0
+        for i in range(5):
+            sample = sched.step(vel, sched.timesteps[i], sample)
+            mx.eval(sample)
+        # Final value should be finite
+        assert np.isfinite(np.array(sample)).all()
+
+
+# ---------------------------------------------------------------------------
+# UniPC Scheduler Tests
+# ---------------------------------------------------------------------------
+
+
+class TestFlowUniPCScheduler:
+    def test_initialization(self):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        assert sched.num_train_timesteps == 1000
+        assert sched.solver_order == 2
+        assert sched.lower_order_final is True
+
+    def test_set_timesteps(self):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        sched.set_timesteps(30, shift=12.0)
+        mx.eval(sched.timesteps, sched.sigmas)
+        assert sched.timesteps.shape == (30,)
+        assert sched.sigmas.shape == (31,)
+
+    def test_step_index_increments(self):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        sched.set_timesteps(5, shift=1.0)
+        sample = mx.ones((1, 1, 1, 1, 1))
+        vel = mx.zeros_like(sample)
+        assert sched._step_index == 0
+        sched.step(vel, 0, sample)
+        assert sched._step_index == 1
+
+    def test_reset(self):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        sched.set_timesteps(5, shift=1.0)
+        sample = mx.ones((1, 1, 1, 1, 1))
+        sched.step(mx.zeros_like(sample), 0, sample)
+        sched.reset()
+        assert sched._step_index == 0
+        assert sched._lower_order_nums == 0
+        assert sched._last_sample is None
+        assert all(m is None for m in sched._model_outputs)
+
+    def test_full_loop_finite(self):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        sched.set_timesteps(10, shift=1.0)
+        sample = mx.ones((1, 2, 1, 2, 2))
+        for i in range(10):
+            vel = mx.ones_like(sample) * 0.1
+            sample = sched.step(vel, sched.timesteps[i], sample)
+            mx.eval(sample)
+        assert np.isfinite(np.array(sample)).all()
+
+    def test_corrector_not_applied_first_step(self):
+        """First step should skip the corrector (no history)."""
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler(use_corrector=True)
+        sched.set_timesteps(10, shift=5.0)
+        sample = mx.random.normal((1, 4, 1, 2, 2))
+        vel = mx.random.normal(sample.shape)
+        # Before step 0: no last_sample
+        assert sched._last_sample is None
+        sched.step(vel, sched.timesteps[0], sample)
+        # After step 0: last_sample should be set for corrector on step 1
+        assert sched._last_sample is not None
+
+    def test_corrector_applied_after_first_step(self):
+        """Steps after the first should use the corrector when enabled."""
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler(use_corrector=True)
+        sched.set_timesteps(10, shift=5.0)
+        sample = mx.random.normal((1, 2, 1, 4, 4))
+        for i in range(3):
+            vel = mx.random.normal(sample.shape)
+            sample = sched.step(vel, sched.timesteps[i], sample)
+            mx.eval(sample)
+        # lower_order_nums should have increased
+        assert sched._lower_order_nums >= 2
+
+    def test_denoise_to_target(self):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        sched.set_timesteps(20, shift=5.0)
+        target = mx.zeros((1, 2, 1, 4, 4))
+        latents = mx.random.normal(target.shape)
+        for i in range(20):
+            sigma = float(sched.sigmas[i].item())
+            v = latents / max(sigma, 1e-6)
+            latents = sched.step(v, sched.timesteps[i], latents)
+            mx.eval(latents)
+        np.testing.assert_allclose(np.array(latents), 0.0, atol=1e-3)
+
+    @pytest.mark.parametrize("steps", [5, 10, 20, 50])
+    def test_various_step_counts(self, steps):
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler()
+        sched.set_timesteps(steps, shift=5.0)
+        mx.eval(sched.timesteps, sched.sigmas)
+        assert sched.timesteps.shape == (steps,)
+        assert sched.sigmas.shape == (steps + 1,)
+
+    def test_disable_corrector(self):
+        """Disabling corrector on step 0 should still work without error."""
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler(use_corrector=True, disable_corrector=[0])
+        sched.set_timesteps(5, shift=1.0)
+        sample = mx.ones((1, 1, 1, 2, 2))
+        for i in range(5):
+            vel = mx.ones_like(sample) * 0.1
+            sample = sched.step(vel, sched.timesteps[i], sample)
+            mx.eval(sample)
+        assert np.isfinite(np.array(sample)).all()
+
+    def test_solver_order_3(self):
+        """Order 3 should work without error."""
+        from mlx_video.models.wan.scheduler import FlowUniPCScheduler
+        sched = FlowUniPCScheduler(solver_order=3, use_corrector=True)
+        sched.set_timesteps(10, shift=5.0)
+        sample = mx.random.normal((1, 2, 1, 2, 2))
+        for i in range(10):
+            vel = mx.random.normal(sample.shape)
+            sample = sched.step(vel, sched.timesteps[i], sample)
+            mx.eval(sample)
+        assert np.isfinite(np.array(sample)).all()
+
+    def test_corrector_rhos_c_not_hardcoded(self):
+        """Corrector rhos_c should be computed via linalg.solve, not hardcoded 0.5."""
+        import math
+        # For 50-step schedule with shift=5.0, order 2 corrector at step 5:
+        # rhos_c[0] (history) should be ~0.07, NOT 0.5
+        # rhos_c[1] (D1_t) should be ~0.45, NOT 0.5
+        from mlx_video.models.wan.scheduler import _compute_sigmas
+
+        sigmas = _compute_sigmas(50, shift=5.0)
+
+        def _lambda(sigma):
+            if sigma >= 1.0:
+                return -math.inf
+            if sigma <= 0.0:
+                return math.inf
+            return math.log(1 - sigma) - math.log(sigma)
+
+        for step_idx in [5, 10, 25, 45]:
+            sigma_s0 = sigmas[step_idx - 1]
+            sigma_t = sigmas[step_idx]
+            lambda_s0 = _lambda(sigma_s0)
+            lambda_t = _lambda(sigma_t)
+            h = lambda_t - lambda_s0
+            hh = -h
+
+            sigma_sk = sigmas[step_idx - 2]
+            lambda_sk = _lambda(sigma_sk)
+            rk = (lambda_sk - lambda_s0) / h
+            rks = np.array([rk, 1.0])
+
+            h_phi_1 = math.expm1(hh)
+            B_h = h_phi_1
+            h_phi_k = h_phi_1 / hh - 1.0
+            factorial_i = 1
+            R_rows, b_vals = [], []
+            for j in range(1, 3):
+                R_rows.append(rks ** (j - 1))
+                b_vals.append(h_phi_k * factorial_i / B_h)
+                factorial_i *= j + 1
+                h_phi_k = h_phi_k / hh - 1.0 / factorial_i
+            R = np.stack(R_rows)
+            b = np.array(b_vals)
+            rhos_c = np.linalg.solve(R, b)
+
+            # History weight should be small (~0.07-0.09), not 0.5
+            assert rhos_c[0] < 0.15, f"Step {step_idx}: rhos_c[0]={rhos_c[0]:.4f} too large"
+            assert rhos_c[0] > 0.0, f"Step {step_idx}: rhos_c[0]={rhos_c[0]:.4f} should be positive"
+            # D1_t weight should be ~0.42-0.45, not 0.5
+            assert 0.3 < rhos_c[1] < 0.5, f"Step {step_idx}: rhos_c[1]={rhos_c[1]:.4f} out of range"
+
+
+class TestSchedulerCoherence:
+    """Tests that Euler, DPM++, and UniPC schedulers produce coherent results.
+
+    All three schedulers should agree on shared structure (sigma schedules,
+    first-step behavior) and converge to the same result given perfect
+    velocity oracles, even though they use different update rules.
+    """
+
+    @staticmethod
+    def _make_schedulers(steps=10, shift=5.0):
+        from mlx_video.models.wan.scheduler import (
+            FlowDPMPP2MScheduler,
+            FlowMatchEulerScheduler,
+            FlowUniPCScheduler,
+        )
+
+        scheds = {
+            "euler": FlowMatchEulerScheduler(),
+            "dpm++": FlowDPMPP2MScheduler(),
+            "unipc": FlowUniPCScheduler(),
+        }
+        for s in scheds.values():
+            s.set_timesteps(steps, shift=shift)
+        return scheds
+
+    def test_identical_sigma_schedules(self):
+        """All schedulers must use the same sigma schedule."""
+        scheds = self._make_schedulers(20, shift=5.0)
+        ref = np.array(scheds["euler"].sigmas)
+        for name in ("dpm++", "unipc"):
+            np.testing.assert_allclose(
+                np.array(scheds[name].sigmas),
+                ref,
+                atol=1e-6,
+                err_msg=f"{name} sigma schedule differs from Euler",
+            )
+
+    def test_identical_timesteps(self):
+        """All schedulers must produce the same timestep sequence."""
+        scheds = self._make_schedulers(20, shift=5.0)
+        ref = np.array(scheds["euler"].timesteps)
+        for name in ("dpm++", "unipc"):
+            np.testing.assert_allclose(
+                np.array(scheds[name].timesteps),
+                ref,
+                atol=1e-6,
+                err_msg=f"{name} timesteps differ from Euler",
+            )
+
+    def test_first_step_matches_euler(self):
+        """Step 0 (1st-order for all solvers) should match Euler exactly."""
+        mx.random.seed(42)
+        shape = (1, 4, 1, 4, 4)
+        noise = mx.random.normal(shape)
+        vel = mx.random.normal(shape)
+
+        scheds = self._make_schedulers(10, shift=5.0)
+        results = {}
+        for name, sched in scheds.items():
+            r = sched.step(vel, sched.timesteps[0], noise)
+            mx.eval(r)
+            results[name] = np.array(r)
+
+        np.testing.assert_allclose(
+            results["dpm++"], results["euler"], atol=1e-5,
+            err_msg="DPM++ step 0 should match Euler",
+        )
+        np.testing.assert_allclose(
+            results["unipc"], results["euler"], atol=1e-5,
+            err_msg="UniPC step 0 should match Euler",
+        )
+
+    def test_first_step_matches_across_shifts(self):
+        """Step 0 should match Euler for different shift values."""
+        mx.random.seed(99)
+        shape = (1, 2, 1, 2, 2)
+        noise = mx.random.normal(shape)
+        vel = mx.random.normal(shape)
+
+        for shift in (1.0, 5.0, 12.0):
+            scheds = self._make_schedulers(10, shift=shift)
+            euler_r = scheds["euler"].step(vel, scheds["euler"].timesteps[0], noise)
+            dpm_r = scheds["dpm++"].step(vel, scheds["dpm++"].timesteps[0], noise)
+            unipc_r = scheds["unipc"].step(vel, scheds["unipc"].timesteps[0], noise)
+            mx.eval(euler_r, dpm_r, unipc_r)
+            np.testing.assert_allclose(
+                np.array(dpm_r), np.array(euler_r), atol=1e-5,
+                err_msg=f"DPM++ step 0 differs from Euler at shift={shift}",
+            )
+            np.testing.assert_allclose(
+                np.array(unipc_r), np.array(euler_r), atol=1e-5,
+                err_msg=f"UniPC step 0 differs from Euler at shift={shift}",
+            )
+
+    def test_oracle_all_converge_to_target(self):
+        """Given a perfect velocity oracle v=x/sigma, all solvers should
+        denoise to approximately zero (the target)."""
+        mx.random.seed(7)
+        shape = (1, 2, 1, 4, 4)
+        noise = mx.random.normal(shape)
+
+        for name, sched in self._make_schedulers(20, shift=5.0).items():
+            latents = noise
+            for i in range(20):
+                sigma = float(sched.sigmas[i].item())
+                v = latents / max(sigma, 1e-8)
+                latents = sched.step(v, sched.timesteps[i], latents)
+                mx.eval(latents)
+            np.testing.assert_allclose(
+                np.array(latents), 0.0, atol=1e-3,
+                err_msg=f"{name} did not converge to target with oracle",
+            )
+
+    def test_oracle_higher_order_closer_to_target(self):
+        """With few steps and a perfect oracle, higher-order solvers should
+        be at least as accurate as Euler."""
+        mx.random.seed(12)
+        shape = (1, 2, 1, 4, 4)
+        noise = mx.random.normal(shape)
+        steps = 5
+
+        errors = {}
+        for name, sched in self._make_schedulers(steps, shift=5.0).items():
+            latents = noise
+            for i in range(steps):
+                sigma = float(sched.sigmas[i].item())
+                v = latents / max(sigma, 1e-8)
+                latents = sched.step(v, sched.timesteps[i], latents)
+                mx.eval(latents)
+            errors[name] = float(mx.mean(mx.abs(latents)).item())
+
+        # Higher-order solvers should not be significantly worse than Euler
+        assert errors["dpm++"] <= errors["euler"] * 1.5, (
+            f"DPM++ error {errors['dpm++']:.6f} much worse than Euler {errors['euler']:.6f}"
+        )
+        assert errors["unipc"] <= errors["euler"] * 1.5, (
+            f"UniPC error {errors['unipc']:.6f} much worse than Euler {errors['euler']:.6f}"
+        )
+
+    def test_multistep_trajectory_similar_magnitude(self):
+        """Over a full denoising loop with constant velocity, all solvers
+        should produce outputs of similar magnitude (not diverging)."""
+        mx.random.seed(42)
+        shape = (1, 4, 1, 4, 4)
+        noise = mx.random.normal(shape)
+        steps = 20
+
+        final_means = {}
+        for name, sched in self._make_schedulers(steps, shift=5.0).items():
+            latents = noise
+            for i in range(steps):
+                vel = latents * 0.1
+                latents = sched.step(vel, sched.timesteps[i], latents)
+                mx.eval(latents)
+            final_means[name] = float(mx.mean(mx.abs(latents)).item())
+
+        # All solvers should produce results within the same order of magnitude
+        vals = list(final_means.values())
+        ratio = max(vals) / max(min(vals), 1e-10)
+        assert ratio < 10.0, (
+            f"Scheduler outputs diverge too much: {final_means}, ratio={ratio:.1f}"
+        )
+
+    def test_intermediate_values_finite(self):
+        """Every intermediate latent value must be finite for all solvers."""
+        mx.random.seed(0)
+        shape = (1, 2, 1, 2, 2)
+        noise = mx.random.normal(shape)
+
+        for name, sched in self._make_schedulers(15, shift=5.0).items():
+            latents = noise
+            for i in range(15):
+                vel = mx.random.normal(shape)
+                latents = sched.step(vel, sched.timesteps[i], latents)
+                mx.eval(latents)
+                assert np.isfinite(np.array(latents)).all(), (
+                    f"{name} produced non-finite values at step {i}"
+                )
+
+    def test_lambda_boundary_values(self):
+        """_lambda must return -inf at sigma=1.0 and +inf at sigma=0.0."""
+        from mlx_video.models.wan.scheduler import (
+            FlowDPMPP2MScheduler,
+            FlowUniPCScheduler,
+        )
+
+        for cls in (FlowDPMPP2MScheduler, FlowUniPCScheduler):
+            assert cls._lambda(1.0) == -math.inf, (
+                f"{cls.__name__}._lambda(1.0) should be -inf"
+            )
+            assert cls._lambda(0.0) == math.inf, (
+                f"{cls.__name__}._lambda(0.0) should be +inf"
+            )
+            # Interior values should be finite
+            lam = cls._lambda(0.5)
+            assert math.isfinite(lam) and lam == 0.0, (
+                f"{cls.__name__}._lambda(0.5) should be 0.0"
+            )
+
+    def test_lambda_monotonically_decreasing(self):
+        """_lambda(sigma) should decrease as sigma increases (more noise → lower SNR)."""
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler
+
+        sigmas = [0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99]
+        lambdas = [FlowDPMPP2MScheduler._lambda(s) for s in sigmas]
+        for i in range(len(lambdas) - 1):
+            assert lambdas[i] > lambdas[i + 1], (
+                f"_lambda not decreasing: _lambda({sigmas[i]})={lambdas[i]} "
+                f"vs _lambda({sigmas[i+1]})={lambdas[i+1]}"
+            )
+
+    def test_step0_is_ddim_formula(self):
+        """At sigma=1.0, the DPM++/UniPC first step should reduce to the
+        DDIM formula: x_next = sigma_next * x + (1 - sigma_next) * x0."""
+        mx.random.seed(55)
+        shape = (1, 2, 1, 2, 2)
+        sample = mx.random.normal(shape)
+        vel = mx.random.normal(shape)
+
+        for steps, shift in [(10, 5.0), (20, 12.0)]:
+            scheds = self._make_schedulers(steps, shift=shift)
+            sigma_next = float(scheds["euler"].sigmas[1].item())
+            sigma_cur = float(scheds["euler"].sigmas[0].item())
+            assert abs(sigma_cur - 1.0) < 1e-6, "First sigma should be ~1.0"
+
+            x0 = sample - sigma_cur * vel
+            expected = sigma_next * sample + (1.0 - sigma_next) * x0
+            mx.eval(expected)
+
+            for name in ("dpm++", "unipc"):
+                result = scheds[name].step(vel, scheds[name].timesteps[0], sample)
+                mx.eval(result)
+                np.testing.assert_allclose(
+                    np.array(result), np.array(expected), atol=1e-5,
+                    err_msg=f"{name} step 0 doesn't match DDIM formula (shift={shift})",
+                )
+
+    @pytest.mark.parametrize("steps", [5, 10, 20, 50])
+    def test_coherent_across_step_counts(self, steps):
+        """All solvers should agree on step 0 regardless of total step count."""
+        mx.random.seed(77)
+        shape = (1, 2, 1, 2, 2)
+        noise = mx.random.normal(shape)
+        vel = mx.random.normal(shape)
+
+        scheds = self._make_schedulers(steps, shift=5.0)
+        results = {}
+        for name, sched in scheds.items():
+            r = sched.step(vel, sched.timesteps[0], noise)
+            mx.eval(r)
+            results[name] = np.array(r)
+
+        np.testing.assert_allclose(
+            results["dpm++"], results["euler"], atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            results["unipc"], results["euler"], atol=1e-5,
+        )
+
+    def test_dpmpp_unipc_agree_on_step1(self):
+        """After warmup, DPM++ and UniPC step 1 should be similar
+        (both use 2nd-order corrections based on the same model outputs)."""
+        mx.random.seed(42)
+        shape = (1, 4, 1, 4, 4)
+        noise = mx.random.normal(shape)
+
+        scheds = self._make_schedulers(10, shift=5.0)
+        # Run step 0 with same velocity
+        vel0 = mx.random.normal(shape)
+        for sched in scheds.values():
+            sched.step(vel0, sched.timesteps[0], noise)
+
+        # Run step 1 from same sample with same velocity
+        sample1 = scheds["euler"].step(vel0, scheds["euler"].timesteps[0], noise)
+        mx.eval(sample1)
+        vel1 = mx.random.normal(shape)
+
+        r_dpm = scheds["dpm++"].step(vel1, scheds["dpm++"].timesteps[1], sample1)
+        r_unipc = scheds["unipc"].step(vel1, scheds["unipc"].timesteps[1], sample1)
+        mx.eval(r_dpm, r_unipc)
+
+        # They won't be identical (different correction formulas) but should
+        # be in the same ballpark (within 50% of each other's magnitude)
+        mean_dpm = float(mx.mean(mx.abs(r_dpm)).item())
+        mean_unipc = float(mx.mean(mx.abs(r_unipc)).item())
+        ratio = max(mean_dpm, mean_unipc) / max(min(mean_dpm, mean_unipc), 1e-10)
+        assert ratio < 2.0, (
+            f"DPM++ and UniPC step 1 differ too much: "
+            f"DPM++={mean_dpm:.4f}, UniPC={mean_unipc:.4f}"
+        )
+
+    def test_reset_makes_solvers_reproducible(self):
+        """After reset(), running the same loop should produce identical output."""
+        mx.random.seed(42)
+        shape = (1, 2, 1, 2, 2)
+        noise = mx.random.normal(shape)
+
+        from mlx_video.models.wan.scheduler import FlowDPMPP2MScheduler, FlowUniPCScheduler
+
+        for cls in (FlowDPMPP2MScheduler, FlowUniPCScheduler):
+            sched = cls()
+            sched.set_timesteps(5, shift=5.0)
+
+            # First run
+            latents = noise
+            for i in range(5):
+                vel = latents * 0.1
+                latents = sched.step(vel, sched.timesteps[i], latents)
+                mx.eval(latents)
+            result1 = np.array(latents)
+
+            # Reset and run again
+            sched.reset()
+            latents = noise
+            for i in range(5):
+                vel = latents * 0.1
+                latents = sched.step(vel, sched.timesteps[i], latents)
+                mx.eval(latents)
+            result2 = np.array(latents)
+
+            np.testing.assert_allclose(result1, result2, atol=1e-5,
+                err_msg=f"{cls.__name__} not reproducible after reset()")
+
+
+# ---------------------------------------------------------------------------
+# Wan2.2 VAE Component Tests
+# ---------------------------------------------------------------------------
+
+
+class TestVAE22CausalConv3d:
+    """Tests for vae22.CausalConv3d (channels-last)."""
+
+    def test_output_shape_k3(self):
+        from mlx_video.models.wan.vae22 import CausalConv3d
+        conv = CausalConv3d(8, 16, kernel_size=3, padding=1)
+        x = mx.random.normal((1, 4, 8, 8, 8))  # [B, T, H, W, C]
+        out = conv(x)
+        mx.eval(out)
+        assert out.shape == (1, 4, 8, 8, 16)
+
+    def test_output_shape_k1(self):
+        from mlx_video.models.wan.vae22 import CausalConv3d
+        conv = CausalConv3d(8, 16, kernel_size=1)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = conv(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 16)
+
+    def test_temporal_causal(self):
+        """Output at t=0 should not depend on t>0."""
+        from mlx_video.models.wan.vae22 import CausalConv3d
+        conv = CausalConv3d(2, 2, kernel_size=3, padding=1)
+        conv.weight = mx.random.normal(conv.weight.shape) * 0.1
+        conv.bias = mx.zeros(conv.bias.shape)
+
+        x = mx.zeros((1, 4, 4, 4, 2))
+        out_zero = conv(x)
+        mx.eval(out_zero)
+        t0_ref = np.array(out_zero[0, 0])
+
+        # Modify t=2..3; output at t=0 should be unchanged
+        x_mod = mx.concatenate([
+            x[:, :2],
+            mx.ones((1, 2, 4, 4, 2)),
+        ], axis=1)
+        out_mod = conv(x_mod)
+        mx.eval(out_mod)
+        t0_mod = np.array(out_mod[0, 0])
+        np.testing.assert_allclose(t0_ref, t0_mod, atol=1e-5)
+
+    def test_channels_last_format(self):
+        """Verify input/output are channels-last [B, T, H, W, C]."""
+        from mlx_video.models.wan.vae22 import CausalConv3d
+        conv = CausalConv3d(4, 8, kernel_size=3, padding=1)
+        x = mx.random.normal((2, 3, 6, 6, 4))
+        out = conv(x)
+        mx.eval(out)
+        assert out.shape[-1] == 8  # last dim = out_channels
+
+
+class TestRMSNorm:
+    """Tests for vae22.RMS_norm (actually L2 normalization)."""
+
+    def test_output_shape(self):
+        from mlx_video.models.wan.vae22 import RMS_norm
+        norm = RMS_norm(16)
+        x = mx.random.normal((2, 4, 4, 4, 16))
+        out = norm(x)
+        mx.eval(out)
+        assert out.shape == x.shape
+
+    def test_l2_normalization(self):
+        """RMS_norm should normalize to unit L2 norm * sqrt(dim)."""
+        from mlx_video.models.wan.vae22 import RMS_norm
+        dim = 32
+        norm = RMS_norm(dim)
+        x = mx.random.normal((1, 1, 1, 1, dim)) * 5.0  # large values
+        out = norm(x)
+        mx.eval(out)
+        # After L2 norm * scale(=sqrt(dim)) * gamma(=1): ||out|| = sqrt(dim)
+        out_np = np.array(out).flatten()
+        l2 = np.linalg.norm(out_np)
+        np.testing.assert_allclose(l2, math.sqrt(dim), rtol=1e-3)
+
+    def test_scale_invariant(self):
+        """Scaling input by constant should not change output (L2 norm property)."""
+        from mlx_video.models.wan.vae22 import RMS_norm
+        norm = RMS_norm(8)
+        x = mx.random.normal((1, 1, 1, 1, 8))
+        out1 = norm(x)
+        out2 = norm(x * 10.0)
+        mx.eval(out1, out2)
+        np.testing.assert_allclose(np.array(out1), np.array(out2), atol=1e-4)
+
+    def test_gamma_effect(self):
+        """Non-unit gamma should scale output."""
+        from mlx_video.models.wan.vae22 import RMS_norm
+        norm = RMS_norm(4)
+        norm.gamma = mx.array([2.0, 2.0, 2.0, 2.0])
+        x = mx.ones((1, 1, 1, 1, 4))
+        out = norm(x)
+        mx.eval(out)
+        # With gamma=2, each component is 2 * sqrt(4) * x/||x|| = 2 * 2 * 1/2 = 2
+        np.testing.assert_allclose(np.array(out).flatten(), 2.0, atol=1e-4)
+
+
+class TestDupUp3D:
+    """Tests for vae22.DupUp3D spatial/temporal upsampling."""
+
+    def test_spatial_only(self):
+        from mlx_video.models.wan.vae22 import DupUp3D
+        up = DupUp3D(8, 4, factor_t=1, factor_s=2)
+        x = mx.random.normal((1, 3, 4, 4, 8))
+        out = up(x)
+        mx.eval(out)
+        assert out.shape == (1, 3, 8, 8, 4)
+
+    def test_temporal_and_spatial(self):
+        from mlx_video.models.wan.vae22 import DupUp3D
+        up = DupUp3D(16, 8, factor_t=2, factor_s=2)
+        x = mx.random.normal((1, 3, 4, 4, 16))
+        out = up(x)
+        mx.eval(out)
+        assert out.shape == (1, 6, 8, 8, 8)
+
+    def test_first_chunk_trims(self):
+        from mlx_video.models.wan.vae22 import DupUp3D
+        up = DupUp3D(8, 4, factor_t=2, factor_s=2)
+        x = mx.random.normal((1, 3, 4, 4, 8))
+        out_normal = up(x, first_chunk=False)
+        out_trimmed = up(x, first_chunk=True)
+        mx.eval(out_normal, out_trimmed)
+        # first_chunk removes factor_t-1=1 temporal frame
+        assert out_normal.shape[1] == 6
+        assert out_trimmed.shape[1] == 5
+
+    def test_no_temporal_first_chunk_noop(self):
+        from mlx_video.models.wan.vae22 import DupUp3D
+        up = DupUp3D(8, 4, factor_t=1, factor_s=2)
+        x = mx.random.normal((1, 3, 4, 4, 8))
+        out_normal = up(x, first_chunk=False)
+        out_trimmed = up(x, first_chunk=True)
+        mx.eval(out_normal, out_trimmed)
+        # factor_t=1, so first_chunk removes 0 frames
+        assert out_normal.shape == out_trimmed.shape
+
+
+class TestVAE22Resample:
+    """Tests for vae22.Resample (spatial/temporal upsampling)."""
+
+    def test_upsample2d_shape(self):
+        from mlx_video.models.wan.vae22 import Resample
+        r = Resample(8, "upsample2d")
+        r.resample_weight = mx.random.normal(r.resample_weight.shape) * 0.01
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = r(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 8, 8, 8)  # 2x spatial, same temporal
+
+    def test_upsample3d_shape(self):
+        from mlx_video.models.wan.vae22 import Resample
+        r = Resample(8, "upsample3d")
+        r.resample_weight = mx.random.normal(r.resample_weight.shape) * 0.01
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = r(x)
+        mx.eval(out)
+        assert out.shape == (1, 4, 8, 8, 8)  # 2x spatial + 2x temporal
+
+    def test_upsample3d_first_chunk(self):
+        from mlx_video.models.wan.vae22 import Resample
+        r = Resample(8, "upsample3d")
+        r.resample_weight = mx.random.normal(r.resample_weight.shape) * 0.01
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = r(x, first_chunk=True)
+        mx.eval(out)
+        # first_chunk: 1 (bypass) + 2*(T-1) (interleaved) = 2T-1 = 3
+        assert out.shape == (1, 3, 8, 8, 8)
+
+    def test_upsample3d_first_chunk_single_frame(self):
+        """Single-frame input with first_chunk: no temporal upsample."""
+        from mlx_video.models.wan.vae22 import Resample
+        r = Resample(8, "upsample3d")
+        r.resample_weight = mx.random.normal(r.resample_weight.shape) * 0.01
+        x = mx.random.normal((1, 1, 4, 4, 8))
+        out = r(x, first_chunk=True)
+        mx.eval(out)
+        # Single frame with first_chunk: falls through to non-first path
+        # time_conv on 1 frame → 2 interleaved
+        assert out.shape == (1, 2, 8, 8, 8)
+
+    def test_upsample3d_first_frame_bypasses_time_conv(self):
+        """First frame of first_chunk should NOT go through time_conv.
+
+        Official Wan2.2 skips time_conv for the very first frame entirely.
+        We verify this by checking that the first output frame depends only on
+        the first input frame (not on time_conv parameters).
+        """
+        from mlx_video.models.wan.vae22 import Resample
+        C = 8
+        r = Resample(C, "upsample3d")
+        # Set time_conv weights to large values so its effect is detectable
+        r.time_conv.weight = mx.ones(r.time_conv.weight.shape) * 10.0
+        r.time_conv.bias = mx.zeros(r.time_conv.bias.shape)
+        # Set spatial conv to identity-like
+        r.resample_weight = mx.zeros(r.resample_weight.shape)
+        r.resample_bias = mx.zeros(r.resample_bias.shape)
+
+        x = mx.random.normal((1, 3, 2, 2, C))
+        out = r(x, first_chunk=True)
+        mx.eval(out)
+        # Output: 5 frames (1 bypass + 4 interleaved from 2 remaining)
+        assert out.shape[1] == 5
+
+        # First frame should be spatial upsample of x[:, 0:1] only.
+        # Run just the first frame through spatial upsample for reference
+        first_only = x[:, 0:1]
+        ref = r._upsample2x(first_only.reshape(1, 2, 2, C))
+        ref = mx.pad(ref, [(0, 0), (1, 1), (1, 1), (0, 0)])
+        ref = mx.conv_general(ref, r.resample_weight) + r.resample_bias
+        mx.eval(ref)
+
+        # Compare first output frame to reference
+        first_out = out[:, 0:1].reshape(1, out.shape[2], out.shape[3], C)
+        mx.eval(first_out)
+        assert mx.allclose(first_out, ref, atol=1e-5).item(), \
+            "First frame should bypass time_conv and match spatial-only upsample"
+
+
+class TestVAE22ResidualBlock:
+    """Tests for vae22.ResidualBlock."""
+
+    def test_same_dim(self):
+        from mlx_video.models.wan.vae22 import ResidualBlock
+        block = ResidualBlock(8, 8)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = block(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 8)
+
+    def test_different_dim(self):
+        from mlx_video.models.wan.vae22 import ResidualBlock
+        block = ResidualBlock(8, 16)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = block(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 16)
+
+    def test_shortcut_when_dims_differ(self):
+        from mlx_video.models.wan.vae22 import ResidualBlock
+        block = ResidualBlock(8, 16)
+        assert block.shortcut is not None
+
+    def test_no_shortcut_same_dim(self):
+        from mlx_video.models.wan.vae22 import ResidualBlock
+        block = ResidualBlock(8, 8)
+        assert block.shortcut is None
+
+
+class TestResidualBlockLayers:
+    """Tests for vae22.ResidualBlockLayers naming convention."""
+
+    def test_layer_names_no_underscore_prefix(self):
+        """Layer names must NOT start with underscore (MLX ignores them)."""
+        from mlx_video.models.wan.vae22 import ResidualBlockLayers
+        block = ResidualBlockLayers(8, 8)
+        params = dict(block.parameters())
+        # All param keys should use layer_N, not _layer_N
+        for key in params:
+            assert not key.startswith("_"), f"Parameter {key} starts with underscore"
+
+    def test_has_expected_layers(self):
+        from mlx_video.models.wan.vae22 import ResidualBlockLayers
+        block = ResidualBlockLayers(8, 16)
+        assert hasattr(block, "layer_0")  # first RMS_norm
+        assert hasattr(block, "layer_2")  # first CausalConv3d
+        assert hasattr(block, "layer_3")  # second RMS_norm
+        assert hasattr(block, "layer_6")  # second CausalConv3d
+
+    def test_forward_shape(self):
+        from mlx_video.models.wan.vae22 import ResidualBlockLayers
+        block = ResidualBlockLayers(8, 16)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = block(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 16)
+
+
+class TestVAE22AttentionBlock:
+    """Tests for vae22.AttentionBlock (per-frame 2D self-attention)."""
+
+    def test_output_shape(self):
+        from mlx_video.models.wan.vae22 import AttentionBlock
+        block = AttentionBlock(16)
+        block.to_qkv_weight = mx.random.normal(block.to_qkv_weight.shape) * 0.01
+        block.proj_weight = mx.random.normal(block.proj_weight.shape) * 0.01
+        x = mx.random.normal((1, 2, 4, 4, 16))
+        out = block(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 16)
+
+    def test_residual_connection(self):
+        from mlx_video.models.wan.vae22 import AttentionBlock
+        block = AttentionBlock(8)
+        block.to_qkv_weight = mx.zeros(block.to_qkv_weight.shape)
+        block.proj_weight = mx.zeros(block.proj_weight.shape)
+        x = mx.ones((1, 1, 2, 2, 8))
+        out = block(x)
+        mx.eval(out)
+        # With zero weights, attention output is 0 → residual is identity
+        np.testing.assert_allclose(np.array(out), np.array(x), atol=1e-5)
+
+
+class TestHead22:
+    """Tests for vae22.Head22 output head."""
+
+    def test_output_shape(self):
+        from mlx_video.models.wan.vae22 import Head22
+        head = Head22(16, out_channels=12)
+        x = mx.random.normal((1, 2, 4, 4, 16))
+        out = head(x)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 12)
+
+    def test_layer_names_no_underscore(self):
+        """Head layers must not use underscore prefix."""
+        from mlx_video.models.wan.vae22 import Head22
+        head = Head22(8)
+        assert hasattr(head, "layer_0")  # RMS_norm
+        assert hasattr(head, "layer_2")  # CausalConv3d
+        params = dict(head.parameters())
+        for key in params:
+            assert not key.startswith("_"), f"Head param {key} starts with underscore"
+
+
+class TestUnpatchify:
+    """Tests for vae22._unpatchify."""
+
+    def test_basic_shape(self):
+        from mlx_video.models.wan.vae22 import _unpatchify
+        x = mx.random.normal((1, 2, 4, 4, 12))  # 12 = 3 * 2 * 2
+        out = _unpatchify(x, patch_size=2)
+        mx.eval(out)
+        assert out.shape == (1, 2, 8, 8, 3)
+
+    def test_patch_size_1_noop(self):
+        from mlx_video.models.wan.vae22 import _unpatchify
+        x = mx.random.normal((1, 2, 4, 4, 3))
+        out = _unpatchify(x, patch_size=1)
+        mx.eval(out)
+        np.testing.assert_array_equal(np.array(out), np.array(x))
+
+    def test_preserves_content(self):
+        """Unpatchify should be a lossless rearrangement."""
+        from mlx_video.models.wan.vae22 import _unpatchify
+        x = mx.arange(48).reshape(1, 1, 2, 2, 12).astype(mx.float32)
+        out = _unpatchify(x, patch_size=2)
+        mx.eval(out)
+        # All elements should be preserved
+        assert np.array(out).size == 48
+        assert set(np.array(out).flatten().tolist()) == set(range(48))
+
+
+class TestDenormalizeLatents:
+    """Tests for vae22.denormalize_latents."""
+
+    def test_output_shape(self):
+        from mlx_video.models.wan.vae22 import denormalize_latents
+        z = mx.random.normal((1, 2, 4, 4, 48))
+        out = denormalize_latents(z)
+        mx.eval(out)
+        assert out.shape == (1, 2, 4, 4, 48)
+
+    def test_custom_mean_std(self):
+        from mlx_video.models.wan.vae22 import denormalize_latents
+        z = mx.ones((1, 1, 1, 1, 4))
+        mean = mx.array([1.0, 2.0, 3.0, 4.0])
+        std = mx.array([0.5, 0.5, 0.5, 0.5])
+        out = denormalize_latents(z, mean=mean, std=std)
+        mx.eval(out)
+        # z * std + mean = 1*0.5 + [1,2,3,4] = [1.5, 2.5, 3.5, 4.5]
+        np.testing.assert_allclose(np.array(out).flatten(), [1.5, 2.5, 3.5, 4.5], atol=1e-5)
+
+    def test_uses_default_constants(self):
+        from mlx_video.models.wan.vae22 import VAE22_MEAN, VAE22_STD, denormalize_latents
+        # Should not raise with default constants
+        z = mx.zeros((1, 1, 1, 1, 48))
+        out = denormalize_latents(z)
+        mx.eval(out)
+        # z=0 → result = 0 * std + mean = mean
+        np.testing.assert_allclose(
+            np.array(out).flatten(),
+            np.array(VAE22_MEAN).flatten(),
+            atol=1e-5,
+        )
+
+
+class TestVAE22NormConstants:
+    """Tests for VAE22_MEAN and VAE22_STD constants."""
+
+    def test_dimensions(self):
+        from mlx_video.models.wan.vae22 import VAE22_MEAN, VAE22_STD
+        mx.eval(VAE22_MEAN, VAE22_STD)
+        assert VAE22_MEAN.shape == (48,)
+        assert VAE22_STD.shape == (48,)
+
+    def test_std_positive(self):
+        from mlx_video.models.wan.vae22 import VAE22_STD
+        mx.eval(VAE22_STD)
+        assert (np.array(VAE22_STD) > 0).all()
+
+
+class TestWan22VAEDecoder:
+    """Tests for the full Wan22VAEDecoder (tiny configuration)."""
+
+    def test_output_shape_small(self):
+        """Tiny decoder should produce correct spatial/temporal output."""
+        from mlx_video.models.wan.vae22 import Wan22VAEDecoder
+        # Use very small dims to keep test fast
+        dec = Wan22VAEDecoder(z_dim=4, dim=8, dec_dim=8)
+        # Latent: [B=1, T=3, H=2, W=2, C=4]
+        # Expected: temporal 3→5→9→9→9 (two temporal upsamples), spatial 2→4→8→16
+        z = mx.random.normal((1, 3, 2, 2, 4)) * 0.1
+        out = dec(z)
+        mx.eval(out)
+        # Output should have 3 RGB channels and be clipped to [-1, 1]
+        assert out.shape[-1] == 3
+        assert out.ndim == 5
+        assert np.array(out).min() >= -1.0
+        assert np.array(out).max() <= 1.0
+
+    def test_output_clipped(self):
+        from mlx_video.models.wan.vae22 import Wan22VAEDecoder
+        dec = Wan22VAEDecoder(z_dim=4, dim=8, dec_dim=8)
+        z = mx.random.normal((1, 2, 2, 2, 4)) * 10.0  # large values
+        out = dec(z)
+        mx.eval(out)
+        assert np.array(out).min() >= -1.0 - 1e-6
+        assert np.array(out).max() <= 1.0 + 1e-6
+
+
+class TestSanitizeWan22VAEWeights:
+    """Tests for vae22.sanitize_wan22_vae_weights."""
+
+    def test_skip_encoder(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        weights = {
+            "encoder.layer.weight": mx.zeros((4,)),
+            "conv1.weight": mx.zeros((4,)),
+            "decoder.conv1.bias": mx.zeros((4,)),
+        }
+        out = sanitize_wan22_vae_weights(weights)
+        assert "encoder.layer.weight" not in out
+        assert "conv1.weight" not in out
+        assert "decoder.conv1.bias" in out
+
+    def test_sequential_index_remapping(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        weights = {
+            "decoder.upsamples.0.upsamples.0.residual.0.gamma": mx.ones((8,)),
+            "decoder.upsamples.0.upsamples.0.residual.6.bias": mx.zeros((8,)),
+            "decoder.head.0.gamma": mx.ones((4,)),
+            "decoder.head.2.bias": mx.zeros((12,)),
+        }
+        out = sanitize_wan22_vae_weights(weights)
+        assert "decoder.upsamples.0.upsamples.0.residual.layer_0.gamma" in out
+        assert "decoder.upsamples.0.upsamples.0.residual.layer_6.bias" in out
+        assert "decoder.head.layer_0.gamma" in out
+        assert "decoder.head.layer_2.bias" in out
+
+    def test_resample_conv_remapping(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        weights = {
+            "decoder.upsamples.1.upsamples.3.resample.1.weight": mx.zeros((8, 8, 3, 3)),
+            "decoder.upsamples.1.upsamples.3.resample.1.bias": mx.zeros((8,)),
+        }
+        out = sanitize_wan22_vae_weights(weights)
+        assert "decoder.upsamples.1.upsamples.3.resample_weight" in out
+        assert "decoder.upsamples.1.upsamples.3.resample_bias" in out
+
+    def test_attention_remapping(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        weights = {
+            "decoder.middle.1.to_qkv.weight": mx.zeros((24, 8, 1, 1)),
+            "decoder.middle.1.to_qkv.bias": mx.zeros((24,)),
+            "decoder.middle.1.proj.weight": mx.zeros((8, 8, 1, 1)),
+            "decoder.middle.1.proj.bias": mx.zeros((8,)),
+        }
+        out = sanitize_wan22_vae_weights(weights)
+        assert "decoder.middle.1.to_qkv_weight" in out
+        assert "decoder.middle.1.to_qkv_bias" in out
+        assert "decoder.middle.1.proj_weight" in out
+        assert "decoder.middle.1.proj_bias" in out
+
+    def test_conv3d_transpose(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        # Conv3d weight: [O, I, D, H, W] → [O, D, H, W, I]
+        w = mx.zeros((16, 8, 3, 3, 3))
+        weights = {"decoder.conv1.weight": w}
+        out = sanitize_wan22_vae_weights(weights)
+        assert out["decoder.conv1.weight"].shape == (16, 3, 3, 3, 8)
+
+    def test_conv2d_transpose(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        # Conv2d weight: [O, I, H, W] → [O, H, W, I]
+        w = mx.zeros((8, 8, 3, 3))
+        weights = {"decoder.upsamples.0.upsamples.2.resample.1.weight": w}
+        out = sanitize_wan22_vae_weights(weights)
+        key = "decoder.upsamples.0.upsamples.2.resample_weight"
+        assert out[key].shape == (8, 3, 3, 8)
+
+    def test_gamma_squeeze(self):
+        from mlx_video.models.wan.vae22 import sanitize_wan22_vae_weights
+        # gamma: (dim, 1, 1, 1) → (dim,)
+        w = mx.ones((16, 1, 1, 1))
+        weights = {"decoder.upsamples.0.upsamples.0.residual.0.gamma": w}
+        out = sanitize_wan22_vae_weights(weights)
+        key = "decoder.upsamples.0.upsamples.0.residual.layer_0.gamma"
+        assert out[key].shape == (16,)
+
+
+class TestUpResidualBlock:
+    """Tests for vae22.Up_ResidualBlock."""
+
+    def test_no_upsample(self):
+        from mlx_video.models.wan.vae22 import Up_ResidualBlock
+        block = Up_ResidualBlock(8, 8, num_res_blocks=1, temperal_upsample=False, up_flag=False)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = block(x)
+        mx.eval(out)
+        # No upsample: same shape
+        assert out.shape == (1, 2, 4, 4, 8)
+
+    def test_spatial_upsample(self):
+        from mlx_video.models.wan.vae22 import Up_ResidualBlock
+        block = Up_ResidualBlock(8, 4, num_res_blocks=1, temperal_upsample=False, up_flag=True)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = block(x)
+        mx.eval(out)
+        # 2x spatial upsample, no temporal
+        assert out.shape == (1, 2, 8, 8, 4)
+
+    def test_spatial_temporal_upsample(self):
+        from mlx_video.models.wan.vae22 import Up_ResidualBlock
+        block = Up_ResidualBlock(8, 4, num_res_blocks=1, temperal_upsample=True, up_flag=True)
+        x = mx.random.normal((1, 2, 4, 4, 8))
+        out = block(x)
+        mx.eval(out)
+        # 2x spatial + 2x temporal
+        assert out.shape == (1, 4, 8, 8, 4)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

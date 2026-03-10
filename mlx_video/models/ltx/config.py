@@ -131,6 +131,12 @@ class LTXModelConfig(BaseModelConfig):
     # Attention type
     attention_type: AttentionType = AttentionType.DEFAULT
 
+    # LTX-2.3: prompt-conditioned adaptive layer norm
+    # Controls: gate_logits in attention, 9-param scale_shift_table,
+    # prompt_adaln_single, per-block prompt_scale_shift_table,
+    # removal of caption_projection
+    has_prompt_adaln: bool = False
+
     # VAE config
     vae_config: Optional[VideoVAEConfig] = None
 

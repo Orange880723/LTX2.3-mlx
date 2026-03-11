@@ -9,7 +9,18 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from mlx_video.utils import Colors
+class Colors:
+    """ANSI color codes for terminal output."""
+
+    CYAN = "\033[96m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    MAGENTA = "\033[95m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
 
 from mlx_video.models.ltx.config import LTXModelConfig, LTXModelType, LTXRopeType
 from mlx_video.models.ltx.ltx import LTXModel

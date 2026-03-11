@@ -247,7 +247,7 @@ def _load_lora_configs(
     Shared between weight-merging and runtime-wrapping paths.
     """
     from mlx_video.lora import LoRAConfig, load_multiple_loras
-    from mlx_video.utils import Colors
+    from mlx_video.generate_wan import Colors
 
     print(f"\n{Colors.CYAN}Loading {len(lora_configs)} LoRA(s)...{Colors.RESET}")
 
@@ -280,7 +280,7 @@ def load_and_apply_loras(
     For non-quantized (bf16) models. For quantized models, use apply_loras_to_model().
     """
     from mlx_video.lora import apply_loras_to_weights
-    from mlx_video.utils import Colors
+    from mlx_video.generate_wan import Colors
 
     if not lora_configs:
         return model_weights

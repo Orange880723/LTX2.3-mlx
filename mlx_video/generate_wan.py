@@ -22,8 +22,20 @@ from mlx_video.models.wan.loading import (
     load_vae_encoder,
     load_wan_model,
 )
-from mlx_video.postprocess import save_video
-from mlx_video.utils import Colors
+from mlx_video.models.wan.postprocess import save_video
+
+class Colors:
+    """ANSI color codes for terminal output."""
+
+    CYAN = "\033[96m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    MAGENTA = "\033[95m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
 
 # Backward-compat alias (tests and external code may use the old name)
 _build_i2v_mask = build_i2v_mask

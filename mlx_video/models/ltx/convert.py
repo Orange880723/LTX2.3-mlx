@@ -494,7 +494,7 @@ def infer_vae_decoder_config(weights: Dict[str, mx.array], variant: str) -> dict
         "num_res_blocks": 2,
         "out_ch": 2,
         "resolution": 256,
-        "timestep_conditioning": has_timestep if has_timestep else (variant == "dev"),
+        "timestep_conditioning": has_timestep,
         "z_channels": 8,
     }
     return config

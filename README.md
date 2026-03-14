@@ -78,6 +78,10 @@ uv run mlx_video.generate --pipeline dev --prompt "Waves crashing" --image beach
 ```bash
 uv run mlx_video.generate --prompt "Ocean waves crashing" --audio
 uv run mlx_video.generate --pipeline dev --prompt "A jazz band playing" --audio --enhance-prompt
+
+# With full guidance (STG + modality_scale, matches PyTorch defaults)
+uv run mlx_video.generate --pipeline dev --prompt "Ocean waves crashing" --audio \
+    --stg-scale 1.0 --stg-blocks 29 --modality-scale 3.0
 ```
 
 ### LoRA
@@ -146,6 +150,9 @@ uv run mlx_video.upscale --input video.mp4 --output upscaled.mp4 --refine --prom
 | `--cfg-rescale` | 0.7 | CFG rescale factor (reduces over-saturation) |
 | `--negative-prompt` | (default) | Negative prompt for CFG |
 | `--apg` | false | Use Adaptive Projected Guidance (more stable for I2V) |
+| `--stg-scale` | 0.0 | STG scale (PyTorch default: 1.0, requires `--audio`) |
+| `--stg-blocks` | None | Transformer blocks for STG ([29] for LTX-2, [28] for LTX-2.3) |
+| `--modality-scale` | 1.0 | Cross-modal guidance scale (PyTorch default: 3.0, requires `--audio`) |
 
 **Dev-Two-Stage LoRA options:**
 

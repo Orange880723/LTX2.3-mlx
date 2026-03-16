@@ -1633,7 +1633,7 @@ def generate_video(
     a2v_sr = None
     if is_a2v:
         from mlx_video.models.ltx_2.audio_vae.audio_processor import load_audio, ensure_stereo, waveform_to_mel
-        from mlx_video.convert import convert_audio_encoder
+        from mlx_video.models.ltx_2.utils import convert_audio_encoder
         from mlx_video.models.ltx_2.audio_vae import AudioEncoder
 
         with console.status("[blue]Loading and encoding input audio (A2V)...[/]", spinner="dots"):

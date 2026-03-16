@@ -2,10 +2,10 @@ import pytest
 import mlx.core as mx
 import numpy as np
 
-from mlx_video.models.ltx.rope import (
+from mlx_video.models.ltx_2.rope import (
     precompute_freqs_cis,
 )
-from mlx_video.models.ltx.config import LTXModelConfig, LTXRopeType
+from mlx_video.models.ltx_2.config import LTXModelConfig, LTXRopeType
 
 
 def create_video_position_grid(

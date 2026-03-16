@@ -7,15 +7,15 @@ from typing import Any, Dict, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_video.models.ltx.video_vae.convolution import CausalConv3d, PaddingModeType
-from mlx_video.models.ltx.video_vae.ops import PerChannelStatistics, patchify, unpatchify
-from mlx_video.models.ltx.video_vae.resnet import (
+from mlx_video.models.ltx_2.video_vae.convolution import CausalConv3d, PaddingModeType
+from mlx_video.models.ltx_2.video_vae.ops import PerChannelStatistics, patchify, unpatchify
+from mlx_video.models.ltx_2.video_vae.resnet import (
     NormLayerType,
     ResnetBlock3D,
     UNetMidBlock3D,
     get_norm_layer,
 )
-from mlx_video.models.ltx.video_vae.sampling import (
+from mlx_video.models.ltx_2.video_vae.sampling import (
     DepthToSpaceUpsample,
     SpaceToDepthDownsample,
 )
@@ -229,7 +229,7 @@ class VideoEncoder(nn.Module):
             config: VideoEncoderModelConfig with encoder parameters
         """
         super().__init__()
-        from mlx_video.models.ltx.config import VideoEncoderModelConfig
+        from mlx_video.models.ltx_2.config import VideoEncoderModelConfig
 
         self.patch_size = config.patch_size
         self.norm_layer = config.norm_layer
@@ -409,7 +409,7 @@ class VideoEncoder(nn.Module):
             Loaded VideoEncoder instance
         """
         import json
-        from mlx_video.models.ltx.config import VideoEncoderModelConfig
+        from mlx_video.models.ltx_2.config import VideoEncoderModelConfig
 
         # Load config
         config_path = model_path / "config.json"

@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 from mlx_video.utils import rms_norm, apply_quantization
-from mlx_video.models.ltx.rope import apply_interleaved_rotary_emb
+from mlx_video.models.ltx_2.rope import apply_interleaved_rotary_emb
 
 from mlx_vlm.models.gemma3.language import Gemma3Model
 from mlx_vlm.models.gemma3.config import TextConfig

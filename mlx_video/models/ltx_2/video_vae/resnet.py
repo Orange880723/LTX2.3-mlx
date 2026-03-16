@@ -6,7 +6,7 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_video.models.ltx.video_vae.convolution import CausalConv3d, PaddingModeType
+from mlx_video.models.ltx_2.video_vae.convolution import CausalConv3d, PaddingModeType
 from mlx_video.utils import PixelNorm
 
 

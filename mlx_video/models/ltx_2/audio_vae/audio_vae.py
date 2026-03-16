@@ -168,7 +168,7 @@ class AudioEncoder(nn.Module):
     @classmethod
     def from_pretrained(cls, model_path: Path) -> "AudioEncoder":
         """Load audio encoder from pretrained weights."""
-        from mlx_video.models.ltx.config import AudioEncoderModelConfig
+        from mlx_video.models.ltx_2.config import AudioEncoderModelConfig
         import json
 
         model_path = Path(model_path)
@@ -380,7 +380,7 @@ class AudioDecoder(nn.Module):
     @classmethod
     def from_pretrained(cls, model_path: Path) -> "AudioDecoder":
         """Load audio VAE decoder from pretrained model."""
-        from mlx_video.models.ltx.config import AudioDecoderModelConfig
+        from mlx_video.models.ltx_2.config import AudioDecoderModelConfig
         import json
 
         config = AudioDecoderModelConfig.from_dict(json.load(open(model_path / "config.json")))

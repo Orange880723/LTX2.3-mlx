@@ -6,8 +6,8 @@ from typing import Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_video.models.ltx.config import LTXRopeType
-from mlx_video.models.ltx.rope import apply_rotary_emb
+from mlx_video.models.ltx_2.config import LTXRopeType
+from mlx_video.models.ltx_2.rope import apply_rotary_emb
 
 
 def scaled_dot_product_attention(

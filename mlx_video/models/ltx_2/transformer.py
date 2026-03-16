@@ -4,9 +4,9 @@ from typing import Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_video.models.ltx.config import LTXRopeType, TransformerConfig
-from mlx_video.models.ltx.attention import Attention
-from mlx_video.models.ltx.feed_forward import FeedForward
+from mlx_video.models.ltx_2.config import LTXRopeType, TransformerConfig
+from mlx_video.models.ltx_2.attention import Attention
+from mlx_video.models.ltx_2.feed_forward import FeedForward
 from mlx_video.utils import rms_norm
 
 

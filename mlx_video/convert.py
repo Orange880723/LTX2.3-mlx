@@ -7,8 +7,8 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
 
-from mlx_video.models.ltx.config import LTXModelConfig, LTXModelType
-from mlx_video.models.ltx.ltx import LTXModel
+from mlx_video.models.ltx_2.config import LTXModelConfig, LTXModelType
+from mlx_video.models.ltx_2.ltx import LTXModel
 
 
 def get_model_path(
@@ -639,8 +639,8 @@ def convert_audio_encoder(
     raw_weights = mx.load(vae_path)
 
     # Extract encoder weights and per-channel statistics
-    from mlx_video.models.ltx.audio_vae import AudioEncoder
-    from mlx_video.models.ltx.config import AudioEncoderModelConfig
+    from mlx_video.models.ltx_2.audio_vae import AudioEncoder
+    from mlx_video.models.ltx_2.config import AudioEncoderModelConfig
 
     # Build config from the decoder config (same audio VAE architecture)
     decoder_config_path = model_path / "audio_vae" / "config.json"

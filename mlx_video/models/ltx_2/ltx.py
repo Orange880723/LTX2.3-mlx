@@ -3,16 +3,16 @@ from typing import List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 from pathlib import Path    
-from mlx_video.models.ltx.config import (
+from mlx_video.models.ltx_2.config import (
     LTXModelConfig,
     LTXModelType,
     LTXRopeType,
     TransformerConfig,
 )
-from mlx_video.models.ltx.adaln import AdaLayerNormSingle
-from mlx_video.models.ltx.rope import precompute_freqs_cis
-from mlx_video.models.ltx.text_projection import PixArtAlphaTextProjection
-from mlx_video.models.ltx.transformer import (
+from mlx_video.models.ltx_2.adaln import AdaLayerNormSingle
+from mlx_video.models.ltx_2.rope import precompute_freqs_cis
+from mlx_video.models.ltx_2.text_projection import PixArtAlphaTextProjection
+from mlx_video.models.ltx_2.transformer import (
     BasicAVTransformerBlock,
     Modality,
     TransformerArgs,

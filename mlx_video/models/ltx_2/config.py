@@ -355,9 +355,9 @@ class VideoEncoderModelConfig(BaseModelConfig):
     ])
 
     def __post_init__(self):
-        from mlx_video.models.ltx.video_vae.resnet import NormLayerType
-        from mlx_video.models.ltx.video_vae.video_vae import LogVarianceType
-        from mlx_video.models.ltx.video_vae.convolution import PaddingModeType
+        from mlx_video.models.ltx_2.video_vae.resnet import NormLayerType
+        from mlx_video.models.ltx_2.video_vae.video_vae import LogVarianceType
+        from mlx_video.models.ltx_2.video_vae.convolution import PaddingModeType
 
         if self.norm_layer is None:
             self.norm_layer = NormLayerType.PIXEL_NORM

@@ -21,10 +21,10 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_video.models.ltx.video_vae.convolution import CausalConv3d, PaddingModeType
-from mlx_video.models.ltx.video_vae.ops import unpatchify, PerChannelStatistics
-from mlx_video.models.ltx.video_vae.sampling import DepthToSpaceUpsample
-from mlx_video.models.ltx.video_vae.tiling import TilingConfig, decode_with_tiling
+from mlx_video.models.ltx_2.video_vae.convolution import CausalConv3d, PaddingModeType
+from mlx_video.models.ltx_2.video_vae.ops import unpatchify, PerChannelStatistics
+from mlx_video.models.ltx_2.video_vae.sampling import DepthToSpaceUpsample
+from mlx_video.models.ltx_2.video_vae.tiling import TilingConfig, decode_with_tiling
 
 
 def get_timestep_embedding(

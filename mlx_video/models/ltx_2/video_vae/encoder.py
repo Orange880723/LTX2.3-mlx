@@ -6,7 +6,7 @@ to latent space, which can then be used to condition video generation.
 """
 
 import mlx.core as mx
-from mlx_video.models.ltx.video_vae.video_vae import VideoEncoder
+from mlx_video.models.ltx_2.video_vae.video_vae import VideoEncoder
 
 
 

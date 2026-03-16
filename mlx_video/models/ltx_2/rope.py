@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 
 import mlx.core as mx
 
-from mlx_video.models.ltx.config import LTXRopeType
+from mlx_video.models.ltx_2.config import LTXRopeType
 
 
 def apply_rotary_emb(

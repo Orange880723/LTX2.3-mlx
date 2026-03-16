@@ -4,8 +4,8 @@ import pytest
 import mlx.core as mx
 import numpy as np
 
-from mlx_video.models.ltx.video_vae.sampling import DepthToSpaceUpsample
-from mlx_video.models.ltx.video_vae.tiling import (
+from mlx_video.models.ltx_2.video_vae.sampling import DepthToSpaceUpsample
+from mlx_video.models.ltx_2.video_vae.tiling import (
     TilingConfig,
     compute_trapezoidal_mask_1d,
     decode_with_tiling,

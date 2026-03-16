@@ -1,4 +1,4 @@
-from mlx_video.models.ltx import LTXModel, LTXModelConfig
+from mlx_video.models.ltx_2 import LTXModel, LTXModelConfig
 from mlx_video.convert import (
     load_transformer_weights,
     load_vae_weights,
@@ -9,7 +9,7 @@ from mlx_video.convert import (
 )
 
 # Audio VAE components
-from mlx_video.models.ltx.audio_vae import (
+from mlx_video.models.ltx_2.audio_vae import (
     AudioDecoder,
     Vocoder,
     decode_audio,
@@ -19,7 +19,7 @@ from mlx_video.models.ltx.audio_vae import (
 )
 
 # Conditioning
-from mlx_video.conditioning import (
+from mlx_video.models.ltx_2.conditioning import (
     VideoConditionByLatentIndex,
 )
 

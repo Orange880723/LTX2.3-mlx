@@ -158,10 +158,14 @@ def analyze_video(frames, chunk_size=None, compute_flow=False):
         boundary_metrics = []
         for b in boundaries:
             if b < n and b > 0:
-                pre = metrics["frame_diff"][b - 1] if b > 1 else metrics["frame_diff"][1]
+                pre = (
+                    metrics["frame_diff"][b - 1] if b > 1 else metrics["frame_diff"][1]
+                )
                 at = metrics["frame_diff"][b]
                 ratio = at / (pre + 1e-10)
-                brightness_jump = metrics["brightness"][b] - metrics["brightness"][b - 1]
+                brightness_jump = (
+                    metrics["brightness"][b] - metrics["brightness"][b - 1]
+                )
                 contrast_jump = (
                     (metrics["contrast"][b] - metrics["contrast"][b - 1])
                     / (metrics["contrast"][b - 1] + 1e-10)
@@ -198,7 +202,9 @@ def print_report(metrics, path, fps, total_frames, frames_analyzed):
     print("VIDEO QUALITY REPORT")
     print("=" * 72)
     print(f"  File: {path}")
-    print(f"  Total frames: {total_frames}  Analyzed: {frames_analyzed}  FPS: {fps:.1f}")
+    print(
+        f"  Total frames: {total_frames}  Analyzed: {frames_analyzed}  FPS: {fps:.1f}"
+    )
     duration = total_frames / fps if fps > 0 else 0
     print(f"  Duration: {duration:.1f}s")
     print()
@@ -211,52 +217,76 @@ def print_report(metrics, path, fps, total_frames, frames_analyzed):
         print("-" * 40)
         if n_uniform:
             frames_list = np.where(metrics["is_uniform"])[0][:10]
-            print(f"  Uniform/blank frames: {n_uniform} — frames {list(frames_list)}{'...' if n_uniform > 10 else ''}")
+            print(
+                f"  Uniform/blank frames: {n_uniform} — frames {list(frames_list)}{'...' if n_uniform > 10 else ''}"
+            )
         if n_noisy:
             frames_list = np.where(metrics["is_noisy"])[0][:10]
-            print(f"  Noisy frames: {n_noisy} — frames {list(frames_list)}{'...' if n_noisy > 10 else ''}")
+            print(
+                f"  Noisy frames: {n_noisy} — frames {list(frames_list)}{'...' if n_noisy > 10 else ''}"
+            )
         print()
 
     print("SHARPNESS")
     print("-" * 40)
-    print(f"  Laplacian var:  mean={np.mean(sl):8.1f}  min={np.min(sl):8.1f}  max={np.max(sl):8.1f}  std={np.std(sl):.1f}")
-    print(f"  Gradient mag:   mean={np.mean(sg):8.2f}  min={np.min(sg):8.2f}  max={np.max(sg):8.2f}  std={np.std(sg):.2f}")
+    print(
+        f"  Laplacian var:  mean={np.mean(sl):8.1f}  min={np.min(sl):8.1f}  max={np.max(sl):8.1f}  std={np.std(sl):.1f}"
+    )
+    print(
+        f"  Gradient mag:   mean={np.mean(sg):8.2f}  min={np.min(sg):8.2f}  max={np.max(sg):8.2f}  std={np.std(sg):.2f}"
+    )
     if np.std(sl) / (np.mean(sl) + 1e-10) > 0.3:
         print("  ⚠  High sharpness variation — possible blur artifacts")
     print()
 
     print("BRIGHTNESS & CONTRAST")
     print("-" * 40)
-    print(f"  Brightness:     mean={np.mean(br):6.1f}  min={np.min(br):6.1f}  max={np.max(br):6.1f}  std={np.std(br):.2f}")
-    print(f"  Contrast (std): mean={np.mean(ct):6.1f}  min={np.min(ct):6.1f}  max={np.max(ct):6.1f}  std={np.std(ct):.2f}")
+    print(
+        f"  Brightness:     mean={np.mean(br):6.1f}  min={np.min(br):6.1f}  max={np.max(br):6.1f}  std={np.std(br):.2f}"
+    )
+    print(
+        f"  Contrast (std): mean={np.mean(ct):6.1f}  min={np.min(ct):6.1f}  max={np.max(ct):6.1f}  std={np.std(ct):.2f}"
+    )
     if np.std(br) > 3.0:
         print("  ⚠  Brightness instability — may indicate chunk boundary artifacts")
     print()
 
     print("COLOR DISTRIBUTION (BGR)")
     print("-" * 40)
-    print(f"  Blue:  mean={np.mean(metrics['color_mean_b']):6.1f}  std={np.std(metrics['color_mean_b']):.2f}")
-    print(f"  Green: mean={np.mean(metrics['color_mean_g']):6.1f}  std={np.std(metrics['color_mean_g']):.2f}")
-    print(f"  Red:   mean={np.mean(metrics['color_mean_r']):6.1f}  std={np.std(metrics['color_mean_r']):.2f}")
+    print(
+        f"  Blue:  mean={np.mean(metrics['color_mean_b']):6.1f}  std={np.std(metrics['color_mean_b']):.2f}"
+    )
+    print(
+        f"  Green: mean={np.mean(metrics['color_mean_g']):6.1f}  std={np.std(metrics['color_mean_g']):.2f}"
+    )
+    print(
+        f"  Red:   mean={np.mean(metrics['color_mean_r']):6.1f}  std={np.std(metrics['color_mean_r']):.2f}"
+    )
     print()
 
     print("TEMPORAL STABILITY")
     print("-" * 40)
     fd_nz = fd[1:]  # skip first frame (always 0)
     if len(fd_nz) > 0:
-        print(f"  Frame diff:     mean={np.mean(fd_nz):6.2f}  min={np.min(fd_nz):6.2f}  max={np.max(fd_nz):6.2f}  std={np.std(fd_nz):.2f}")
+        print(
+            f"  Frame diff:     mean={np.mean(fd_nz):6.2f}  min={np.min(fd_nz):6.2f}  max={np.max(fd_nz):6.2f}  std={np.std(fd_nz):.2f}"
+        )
         if np.std(fd_nz) / (np.mean(fd_nz) + 1e-10) > 0.5:
             print("  ⚠  High diff variance — jitter or discontinuities")
     if "flow_mean" in metrics:
         fm = metrics["flow_mean"][1:]
-        print(f"  Optical flow:   mean={np.mean(fm):6.2f}  max_frame={np.max(metrics['flow_max'][1:]):.1f}")
+        print(
+            f"  Optical flow:   mean={np.mean(fm):6.2f}  max_frame={np.max(metrics['flow_max'][1:]):.1f}"
+        )
     print()
 
     # Chunk boundaries
     if "boundaries" in metrics and metrics["boundaries"]:
         print("CHUNK BOUNDARIES")
         print("-" * 40)
-        print(f"  {'Frame':>6}  {'Diff ratio':>10}  {'Brightness':>10}  {'Contrast %':>10}  {'Sharpness %':>11}")
+        print(
+            f"  {'Frame':>6}  {'Diff ratio':>10}  {'Brightness':>10}  {'Contrast %':>10}  {'Sharpness %':>11}"
+        )
         for bm in metrics["boundaries"]:
             print(
                 f"  {bm['frame']:6d}"
@@ -267,7 +297,9 @@ def print_report(metrics, path, fps, total_frames, frames_analyzed):
             )
         avg_ratio = np.mean([b["diff_ratio"] for b in metrics["boundaries"]])
         if avg_ratio > 2.0:
-            print(f"  ⚠  Boundary diff ratio {avg_ratio:.1f}x — visible chunk transitions")
+            print(
+                f"  ⚠  Boundary diff ratio {avg_ratio:.1f}x — visible chunk transitions"
+            )
         print()
 
     # Overall grade
@@ -303,9 +335,7 @@ def main():
         type=int,
         help="Frames per chunk for boundary analysis (e.g., 32)",
     )
-    parser.add_argument(
-        "--start", type=int, default=0, help="Start frame (default: 0)"
-    )
+    parser.add_argument("--start", type=int, default=0, help="Start frame (default: 0)")
     parser.add_argument("--end", type=int, help="End frame (default: all)")
     parser.add_argument(
         "--flow",
@@ -329,8 +359,14 @@ def main():
         import csv
 
         keys = [
-            "sharpness_lap", "sharpness_grad", "brightness", "contrast",
-            "color_mean_b", "color_mean_g", "color_mean_r", "frame_diff",
+            "sharpness_lap",
+            "sharpness_grad",
+            "brightness",
+            "contrast",
+            "color_mean_b",
+            "color_mean_g",
+            "color_mean_r",
+            "frame_diff",
         ]
         if args.flow:
             keys += ["flow_mean", "flow_max"]

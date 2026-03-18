@@ -1,6 +1,5 @@
 """Operations for Video VAE."""
 
-from typing import List, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -32,7 +31,9 @@ def patchify(x: mx.array, patch_size_hw: int = 4, patch_size_t: int = 1) -> mx.a
     new_c = c * patch_size_hw * patch_size_hw * patch_size_t
 
     # Reshape: (B, C, F, H, W) -> (B, C, F/pt, pt, H/ph, ph, W/pw, pw)
-    x = mx.reshape(x, (b, c, new_f, patch_size_t, new_h, patch_size_hw, new_w, patch_size_hw))
+    x = mx.reshape(
+        x, (b, c, new_f, patch_size_t, new_h, patch_size_hw, new_w, patch_size_hw)
+    )
 
     # Permute: (B, C, F', pt, H', ph, W', pw) -> (B, C, pt, pw, ph, F', H', W')
     # PyTorch einops uses (c, p, r, q) = (c, temporal, width, height), so we need pw before ph
@@ -101,7 +102,7 @@ class PerChannelStatistics(nn.Module):
             Normalized tensor
         """
         # Expand mean and std for broadcasting: (C,) -> (1, C, 1, 1, 1)
-        dtype = x.dtype 
+        dtype = x.dtype
         # Cast to float32 for precision
         mean = self.mean.astype(mx.float32).reshape(1, -1, 1, 1, 1)
         std = self.std.astype(mx.float32).reshape(1, -1, 1, 1, 1)
@@ -117,7 +118,7 @@ class PerChannelStatistics(nn.Module):
         Returns:
             Denormalized tensor
         """
-        dtype = x.dtype 
+        dtype = x.dtype
         # Cast to float32 for precision
         mean = self.mean.astype(mx.float32).reshape(1, -1, 1, 1, 1)
         std = self.std.astype(mx.float32).reshape(1, -1, 1, 1, 1)

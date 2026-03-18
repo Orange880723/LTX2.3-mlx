@@ -109,6 +109,7 @@ def convert_audio_encoder(
         return encoder_dir
 
     from huggingface_hub import hf_hub_download
+
     vae_path = hf_hub_download(
         source_repo,
         "audio_vae/diffusion_pytorch_model.safetensors",

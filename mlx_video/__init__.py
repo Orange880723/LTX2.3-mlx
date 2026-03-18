@@ -1,36 +1,33 @@
 from mlx_video.models.ltx_2 import LTXModel, LTXModelConfig
-from mlx_video.models.wan import WanModel, WanModelConfig
 
 # Audio VAE components
 from mlx_video.models.ltx_2.audio_vae import (
     AudioDecoder,
     AudioEncoder,
+    AudioLatentShape,
+    AudioPatchifier,
+    PerChannelStatistics,
     Vocoder,
     decode_audio,
-    AudioPatchifier,
-    AudioLatentShape,
-    PerChannelStatistics,
 )
 
 # Conditioning
-from mlx_video.models.ltx_2.conditioning import (
-    VideoConditionByLatentIndex,
-)
+from mlx_video.models.ltx_2.conditioning import VideoConditionByLatentIndex
 
 # Utilities
 from mlx_video.models.ltx_2.utils import (
     convert_audio_encoder,
     get_model_path,
-    load_safetensors,
     load_config,
+    load_safetensors,
     save_weights,
 )
+from mlx_video.models.wan import WanModel, WanModelConfig
 
 __all__ = [
     # Models
     "LTXModel",
     "LTXModelConfig",
-
     # Audio VAE
     "AudioDecoder",
     "AudioEncoder",

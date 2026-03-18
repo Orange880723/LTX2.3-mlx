@@ -21,7 +21,9 @@ def preprocess_image(image_path: str, width: int, height: int) -> mx.array:
 
     # Resize so that the image covers the target size (LANCZOS)
     scale = max(width / img.width, height / img.height)
-    img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+    img = img.resize(
+        (round(img.width * scale), round(img.height * scale)), Image.LANCZOS
+    )
 
     # Center crop
     x1 = (img.width - width) // 2

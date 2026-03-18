@@ -6,10 +6,7 @@ from mlx_video.lora.apply import (
     apply_loras_to_model,
     apply_loras_to_weights,
 )
-from mlx_video.lora.loader import (
-    load_lora_weights,
-    load_multiple_loras,
-)
+from mlx_video.lora.loader import load_lora_weights, load_multiple_loras
 from mlx_video.lora.types import AppliedLoRA, LoRAConfig, LoRAWeights
 
 __all__ = [

@@ -75,7 +75,11 @@ def decode_with_tiling(
     b, c, f_latent, h_latent, w_latent = latents.shape
 
     # Compute output shape
-    out_f = (1 + (f_latent - 1) * temporal_scale) if causal_temporal else (f_latent * temporal_scale)
+    out_f = (
+        (1 + (f_latent - 1) * temporal_scale)
+        if causal_temporal
+        else (f_latent * temporal_scale)
+    )
     out_h = h_latent * spatial_scale
     out_w = w_latent * spatial_scale
 
@@ -98,9 +102,13 @@ def decode_with_tiling(
 
     # Compute intervals for each dimension
     if causal_temporal:
-        temporal_intervals = split_in_temporal(temporal_tile_size, temporal_overlap, f_latent)
+        temporal_intervals = split_in_temporal(
+            temporal_tile_size, temporal_overlap, f_latent
+        )
     else:
-        temporal_intervals = split_in_spatial(temporal_tile_size, temporal_overlap, f_latent)
+        temporal_intervals = split_in_spatial(
+            temporal_tile_size, temporal_overlap, f_latent
+        )
     height_intervals = split_in_spatial(spatial_tile_size, spatial_overlap, h_latent)
     width_intervals = split_in_spatial(spatial_tile_size, spatial_overlap, w_latent)
 
@@ -124,9 +132,13 @@ def decode_with_tiling(
 
         # Map temporal coordinates
         if causal_temporal:
-            out_t_slice, t_mask = map_temporal_slice(t_start, t_end, t_left, t_right, temporal_scale)
+            out_t_slice, t_mask = map_temporal_slice(
+                t_start, t_end, t_left, t_right, temporal_scale
+            )
         else:
-            out_t_slice, t_mask = map_spatial_slice(t_start, t_end, t_left, t_right, temporal_scale)
+            out_t_slice, t_mask = map_spatial_slice(
+                t_start, t_end, t_left, t_right, temporal_scale
+            )
 
         for h_idx in range(num_h_tiles):
             h_start = height_intervals.starts[h_idx]
@@ -135,7 +147,9 @@ def decode_with_tiling(
             h_right = height_intervals.right_ramps[h_idx]
 
             # Map height coordinates
-            out_h_slice, h_mask = map_spatial_slice(h_start, h_end, h_left, h_right, spatial_scale)
+            out_h_slice, h_mask = map_spatial_slice(
+                h_start, h_end, h_left, h_right, spatial_scale
+            )
 
             for w_idx in range(num_w_tiles):
                 w_start = width_intervals.starts[w_idx]
@@ -144,13 +158,23 @@ def decode_with_tiling(
                 w_right = width_intervals.right_ramps[w_idx]
 
                 # Map width coordinates
-                out_w_slice, w_mask = map_spatial_slice(w_start, w_end, w_left, w_right, spatial_scale)
+                out_w_slice, w_mask = map_spatial_slice(
+                    w_start, w_end, w_left, w_right, spatial_scale
+                )
 
                 # Extract tile latents (small slice)
-                tile_latents = latents[:, :, t_start:t_end, h_start:h_end, w_start:w_end]
+                tile_latents = latents[
+                    :, :, t_start:t_end, h_start:h_end, w_start:w_end
+                ]
 
                 # Decode tile
-                tile_output = decoder_fn(tile_latents, causal=causal, timestep=timestep, debug=False, chunked_conv=chunked_conv)
+                tile_output = decoder_fn(
+                    tile_latents,
+                    causal=causal,
+                    timestep=timestep,
+                    debug=False,
+                    chunked_conv=chunked_conv,
+                )
                 mx.eval(tile_output)
 
                 # Clear tile_latents reference
@@ -173,13 +197,15 @@ def decode_with_tiling(
                 w_mask_slice = w_mask[:actual_w] if len(w_mask) > actual_w else w_mask
 
                 blend_mask = (
-                    t_mask_slice.reshape(1, 1, -1, 1, 1) *
-                    h_mask_slice.reshape(1, 1, 1, -1, 1) *
-                    w_mask_slice.reshape(1, 1, 1, 1, -1)
+                    t_mask_slice.reshape(1, 1, -1, 1, 1)
+                    * h_mask_slice.reshape(1, 1, 1, -1, 1)
+                    * w_mask_slice.reshape(1, 1, 1, 1, -1)
                 )
 
                 # Slice tile output to match
-                tile_output_slice = tile_output[:, :, :actual_t, :actual_h, :actual_w].astype(mx.float32)
+                tile_output_slice = tile_output[
+                    :, :, :actual_t, :actual_h, :actual_w
+                ].astype(mx.float32)
 
                 # Clear full tile_output
                 del tile_output
@@ -196,11 +222,37 @@ def decode_with_tiling(
                 weighted_tile = tile_output_slice * blend_mask
 
                 # Update output using slice assignment
-                output[:, :, t_out_start:t_out_end, h_out_start:h_out_end, w_out_start:w_out_end] = (
-                    output[:, :, t_out_start:t_out_end, h_out_start:h_out_end, w_out_start:w_out_end] + weighted_tile
+                output[
+                    :,
+                    :,
+                    t_out_start:t_out_end,
+                    h_out_start:h_out_end,
+                    w_out_start:w_out_end,
+                ] = (
+                    output[
+                        :,
+                        :,
+                        t_out_start:t_out_end,
+                        h_out_start:h_out_end,
+                        w_out_start:w_out_end,
+                    ]
+                    + weighted_tile
                 )
-                weights[:, :, t_out_start:t_out_end, h_out_start:h_out_end, w_out_start:w_out_end] = (
-                    weights[:, :, t_out_start:t_out_end, h_out_start:h_out_end, w_out_start:w_out_end] + blend_mask
+                weights[
+                    :,
+                    :,
+                    t_out_start:t_out_end,
+                    h_out_start:h_out_end,
+                    w_out_start:w_out_end,
+                ] = (
+                    weights[
+                        :,
+                        :,
+                        t_out_start:t_out_end,
+                        h_out_start:h_out_end,
+                        w_out_start:w_out_end,
+                    ]
+                    + blend_mask
                 )
 
                 # Force evaluation to free memory
@@ -232,12 +284,14 @@ def decode_with_tiling(
                 if next_tile_start_latent == 0:
                     next_tile_start_out = 0
                 elif causal_temporal:
-                    next_tile_start_out = 1 + (next_tile_start_latent - 1) * temporal_scale
+                    next_tile_start_out = (
+                        1 + (next_tile_start_latent - 1) * temporal_scale
+                    )
                 else:
                     next_tile_start_out = next_tile_start_latent * temporal_scale
 
                 # We need to track how many frames we've already emitted
-                if not hasattr(decode_with_tiling, '_emitted_frames'):
+                if not hasattr(decode_with_tiling, "_emitted_frames"):
                     decode_with_tiling._emitted_frames = 0
                 emitted = decode_with_tiling._emitted_frames
 
@@ -245,7 +299,10 @@ def decode_with_tiling(
                     # Normalize and emit frames [emitted, next_tile_start_out)
                     finalized_weights = weights[:, :, emitted:next_tile_start_out, :, :]
                     finalized_weights = mx.maximum(finalized_weights, 1e-8)
-                    finalized_output = output[:, :, emitted:next_tile_start_out, :, :] / finalized_weights
+                    finalized_output = (
+                        output[:, :, emitted:next_tile_start_out, :, :]
+                        / finalized_weights
+                    )
                     finalized_output = finalized_output.astype(latents.dtype)
                     mx.eval(finalized_output)
 
@@ -262,7 +319,7 @@ def decode_with_tiling(
 
     # Emit remaining frames if callback provided
     if on_frames_ready is not None:
-        emitted = getattr(decode_with_tiling, '_emitted_frames', 0)
+        emitted = getattr(decode_with_tiling, "_emitted_frames", 0)
         if emitted < out_f:
             remaining_output = output[:, :, emitted:, :, :].astype(latents.dtype)
             mx.eval(remaining_output)
@@ -270,7 +327,7 @@ def decode_with_tiling(
             del remaining_output
 
     # Reset emitted frames counter for next call
-    if hasattr(decode_with_tiling, '_emitted_frames'):
+    if hasattr(decode_with_tiling, "_emitted_frames"):
         del decode_with_tiling._emitted_frames
 
     # Clean up weights

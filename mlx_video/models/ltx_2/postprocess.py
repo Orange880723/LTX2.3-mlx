@@ -1,9 +1,10 @@
 
 import numpy as np
-from typing import Optional
 
 
-def bilateral_filter(image: np.ndarray, d: int = 5, sigma_color: float = 75, sigma_space: float = 75) -> np.ndarray:
+def bilateral_filter(
+    image: np.ndarray, d: int = 5, sigma_color: float = 75, sigma_space: float = 75
+) -> np.ndarray:
     """Apply bilateral filter to reduce grid artifacts while preserving edges.
 
     Args:
@@ -17,6 +18,7 @@ def bilateral_filter(image: np.ndarray, d: int = 5, sigma_color: float = 75, sig
     """
     try:
         import cv2
+
         return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
     except ImportError:
         # Fallback to simple Gaussian blur if cv2 not available
@@ -35,14 +37,20 @@ def gaussian_blur(image: np.ndarray, kernel_size: int = 3) -> np.ndarray:
     """
     try:
         import cv2
+
         return cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
     except ImportError:
         # Simple box blur fallback
         from scipy.ndimage import uniform_filter
-        return uniform_filter(image, size=(kernel_size, kernel_size, 1)).astype(np.uint8)
+
+        return uniform_filter(image, size=(kernel_size, kernel_size, 1)).astype(
+            np.uint8
+        )
 
 
-def unsharp_mask(image: np.ndarray, kernel_size: int = 5, sigma: float = 1.0, amount: float = 1.0) -> np.ndarray:
+def unsharp_mask(
+    image: np.ndarray, kernel_size: int = 5, sigma: float = 1.0, amount: float = 1.0
+) -> np.ndarray:
     """Apply unsharp masking to enhance edges after blur.
 
     Args:
@@ -56,6 +64,7 @@ def unsharp_mask(image: np.ndarray, kernel_size: int = 5, sigma: float = 1.0, am
     """
     try:
         import cv2
+
         blurred = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
         sharpened = cv2.addWeighted(image, 1 + amount, blurred, -amount, 0)
         return np.clip(sharpened, 0, 255).astype(np.uint8)
@@ -81,23 +90,23 @@ def reduce_grid_artifacts(
     if method == "bilateral":
         d = max(3, int(5 * strength))
         sigma = 50 + 50 * strength
-        processed = np.stack([
-            bilateral_filter(frame, d=d, sigma_color=sigma, sigma_space=sigma)
-            for frame in video
-        ])
+        processed = np.stack(
+            [
+                bilateral_filter(frame, d=d, sigma_color=sigma, sigma_space=sigma)
+                for frame in video
+            ]
+        )
     elif method == "gaussian":
         kernel_size = max(3, int(3 + 4 * strength))
         if kernel_size % 2 == 0:
             kernel_size += 1
-        processed = np.stack([
-            gaussian_blur(frame, kernel_size=kernel_size)
-            for frame in video
-        ])
+        processed = np.stack(
+            [gaussian_blur(frame, kernel_size=kernel_size) for frame in video]
+        )
     elif method == "frequency":
-        processed = np.stack([
-            remove_grid_frequency(frame, grid_size=8)
-            for frame in video
-        ])
+        processed = np.stack(
+            [remove_grid_frequency(frame, grid_size=8) for frame in video]
+        )
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -160,6 +169,3 @@ def remove_grid_frequency(frame: np.ndarray, grid_size: int = 8) -> np.ndarray:
         result[:, :, c] = np.clip(channel_filtered, 0, 255).astype(np.uint8)
 
     return result
-
-
-

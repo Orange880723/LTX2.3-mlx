@@ -4,10 +4,9 @@ Matches the PyTorch AudioProcessor from LTX-2 (torchaudio.transforms.MelSpectrog
 using librosa for macOS/MLX compatibility.
 """
 
-from pathlib import Path
 
-import numpy as np
 import mlx.core as mx
+import numpy as np
 
 
 def load_audio(
@@ -99,14 +98,16 @@ def waveform_to_mel(
 
     for ch in range(channels):
         # Magnitude spectrogram (power=1.0)
-        S = np.abs(librosa.stft(
-            waveform[ch],
-            n_fft=n_fft,
-            hop_length=hop_length,
-            win_length=win_length,
-            center=True,
-            pad_mode="reflect",
-        ))
+        S = np.abs(
+            librosa.stft(
+                waveform[ch],
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                center=True,
+                pad_mode="reflect",
+            )
+        )
 
         # Mel filterbank with slaney normalization
         mel_basis = librosa.filters.mel(

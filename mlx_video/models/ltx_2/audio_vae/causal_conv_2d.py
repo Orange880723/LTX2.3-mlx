@@ -53,8 +53,16 @@ class CausalConv2d(nn.Module):
         # For (N, H, W, C) format: axis 1 is H (height), axis 2 is W (width)
         if self.causality_axis == CausalityAxis.NONE:
             # Non-causal: symmetric padding
-            self.padding = (pad_h // 2, pad_h - pad_h // 2, pad_w // 2, pad_w - pad_w // 2)
-        elif self.causality_axis in (CausalityAxis.WIDTH, CausalityAxis.WIDTH_COMPATIBILITY):
+            self.padding = (
+                pad_h // 2,
+                pad_h - pad_h // 2,
+                pad_w // 2,
+                pad_w - pad_w // 2,
+            )
+        elif self.causality_axis in (
+            CausalityAxis.WIDTH,
+            CausalityAxis.WIDTH_COMPATIBILITY,
+        ):
             # Causal on width: pad left (before width axis)
             self.padding = (pad_h // 2, pad_h - pad_h // 2, pad_w, 0)
         elif self.causality_axis == CausalityAxis.HEIGHT:
@@ -90,7 +98,10 @@ class CausalConv2d(nn.Module):
         if any(p > 0 for p in self.padding):
             # MLX pad expects: [(before_0, after_0), (before_1, after_1), ...]
             # For (N, H, W, C): axis 0=N, axis 1=H, axis 2=W, axis 3=C
-            x = mx.pad(x, [(0, 0), (pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right), (0, 0)])
+            x = mx.pad(
+                x,
+                [(0, 0), (pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right), (0, 0)],
+            )
 
         return self.conv(x)
 
@@ -124,7 +135,14 @@ def make_conv2d(
     if causality_axis is not None:
         # For causal convolution, padding is handled internally by CausalConv2d
         return CausalConv2d(
-            in_channels, out_channels, kernel_size, stride, dilation, groups, bias, causality_axis
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            dilation,
+            groups,
+            bias,
+            causality_axis,
         )
     else:
         # For non-causal convolution, use symmetric padding if not specified

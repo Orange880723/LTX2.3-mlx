@@ -1,10 +1,10 @@
 """Audio VAE module for LTX-2 audio generation."""
 
-from .attention import AttentionType, AttnBlock, make_attn
-from .audio_vae import AudioDecoder, AudioEncoder, decode_audio
-from .audio_processor import load_audio, ensure_stereo, waveform_to_mel
-from .causal_conv_2d import CausalConv2d, make_conv2d
 from ..config import CausalityAxis
+from .attention import AttentionType, AttnBlock, make_attn
+from .audio_processor import ensure_stereo, load_audio, waveform_to_mel
+from .audio_vae import AudioDecoder, AudioEncoder, decode_audio
+from .causal_conv_2d import CausalConv2d, make_conv2d
 from .downsample import Downsample, build_downsampling_path
 from .normalization import NormType, PixelNorm, build_normalization_layer
 from .ops import AudioLatentShape, AudioPatchifier, PerChannelStatistics

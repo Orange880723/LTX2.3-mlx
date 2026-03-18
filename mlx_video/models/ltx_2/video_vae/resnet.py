@@ -44,7 +44,7 @@ class ResnetBlock3D(nn.Module):
         timestep_conditioning: bool = False,
         spatial_padding_mode: PaddingModeType = PaddingModeType.ZEROS,
     ):
-        
+
         super().__init__()
 
         out_channels = out_channels or in_channels
@@ -96,7 +96,7 @@ class ResnetBlock3D(nn.Module):
         causal: bool = True,
         generator: Optional[int] = None,
     ) -> mx.array:
-       
+
         residual = x
 
         # First block
@@ -136,7 +136,7 @@ class UNetMidBlock3D(nn.Module):
         attention_head_dim: Optional[int] = None,
         spatial_padding_mode: PaddingModeType = PaddingModeType.ZEROS,
     ):
-        
+
         super().__init__()
 
         self.num_layers = num_layers

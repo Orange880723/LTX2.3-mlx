@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -27,14 +27,18 @@ def reflect_pad_2d(x: mx.array, pad_h: int, pad_w: int) -> mx.array:
     # Height padding (axis 2)
     if pad_h > 0:
         # Get reflection indices - exclude boundary
-        top_pad = x[:, :, 1:pad_h+1, :, :][:, :, ::-1, :, :]  # Flip top portion
-        bottom_pad = x[:, :, -pad_h-1:-1, :, :][:, :, ::-1, :, :]  # Flip bottom portion
+        top_pad = x[:, :, 1 : pad_h + 1, :, :][:, :, ::-1, :, :]  # Flip top portion
+        bottom_pad = x[:, :, -pad_h - 1 : -1, :, :][
+            :, :, ::-1, :, :
+        ]  # Flip bottom portion
         x = mx.concatenate([top_pad, x, bottom_pad], axis=2)
 
     # Width padding (axis 3)
     if pad_w > 0:
-        left_pad = x[:, :, :, 1:pad_w+1, :][:, :, :, ::-1, :]  # Flip left portion
-        right_pad = x[:, :, :, -pad_w-1:-1, :][:, :, :, ::-1, :]  # Flip right portion
+        left_pad = x[:, :, :, 1 : pad_w + 1, :][:, :, :, ::-1, :]  # Flip left portion
+        right_pad = x[:, :, :, -pad_w - 1 : -1, :][
+            :, :, :, ::-1, :
+        ]  # Flip right portion
         x = mx.concatenate([left_pad, x, right_pad], axis=3)
 
     return x
@@ -50,7 +54,7 @@ def make_conv_nd(
     causal: bool = False,
     spatial_padding_mode: PaddingModeType = PaddingModeType.ZEROS,
 ) -> nn.Module:
-    
+
     if dims == 2:
         return CausalConv2d(
             in_channels=in_channels,
@@ -118,15 +122,17 @@ class CausalConv3d(nn.Module):
         )
 
     def __call__(self, x: mx.array, causal: Optional[bool] = None) -> mx.array:
-        
+
         use_causal = causal if causal is not None else self.causal
 
-        # Apply temporal padding via frame replication 
+        # Apply temporal padding via frame replication
         # Only apply if kernel_size > 1
         if self.time_kernel_size > 1:
             if use_causal:
                 # Causal: replicate first frame kernel_size-1 times at the beginning
-                first_frame_pad = mx.repeat(x[:, :, :1, :, :], self.time_kernel_size - 1, axis=2)
+                first_frame_pad = mx.repeat(
+                    x[:, :, :1, :, :], self.time_kernel_size - 1, axis=2
+                )
                 x = mx.concatenate([first_frame_pad, x], axis=2)
             else:
                 # Non-causal: replicate first frame at start, last frame at end
@@ -176,7 +182,6 @@ class CausalConv3d(nn.Module):
         """
         b, d, h, w, c = x.shape
 
-
         total_elements = d * h * w * c
         max_safe_elements = 30 * 192 * 192 * 128  # ~140M elements per chunk
 
@@ -191,11 +196,10 @@ class CausalConv3d(nn.Module):
 
         overlap = kernel_t - 1
 
-      
         expected_output_frames = d - overlap
 
         outputs = []
-        out_idx = 0 
+        out_idx = 0
 
         # Process chunks
         in_start = 0

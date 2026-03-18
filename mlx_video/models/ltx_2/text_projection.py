@@ -11,7 +11,7 @@ class PixArtAlphaTextProjection(nn.Module):
         out_features: int | None = None,
         bias: bool = True,
     ):
-        
+
         super().__init__()
 
         out_features = out_features or hidden_size

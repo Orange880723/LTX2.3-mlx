@@ -170,19 +170,33 @@ def print_report(results, ref_path, test_path):
 
     print("AGGREGATE METRICS")
     print("-" * 40)
-    print(f"  PSNR (dB):    mean={np.mean(psnr):6.2f}  min={np.min(psnr):6.2f}  max={np.max(psnr):6.2f}")
-    print(f"  SSIM:         mean={np.mean(ssim):.4f}  min={np.min(ssim):.4f}  max={np.max(ssim):.4f}")
-    print(f"  Mean diff:    mean={np.mean(md):6.2f}  min={np.min(md):6.2f}  max={np.max(md):6.2f}")
-    print(f"  Max diff:     mean={np.mean(mx):6.1f}   min={np.min(mx):6.1f}   max={np.max(mx):6.1f}")
-    print(f"  Color dist:   mean={np.mean(cd):.4f}  min={np.min(cd):.4f}  max={np.max(cd):.4f}")
+    print(
+        f"  PSNR (dB):    mean={np.mean(psnr):6.2f}  min={np.min(psnr):6.2f}  max={np.max(psnr):6.2f}"
+    )
+    print(
+        f"  SSIM:         mean={np.mean(ssim):.4f}  min={np.min(ssim):.4f}  max={np.max(ssim):.4f}"
+    )
+    print(
+        f"  Mean diff:    mean={np.mean(md):6.2f}  min={np.min(md):6.2f}  max={np.max(md):6.2f}"
+    )
+    print(
+        f"  Max diff:     mean={np.mean(mx):6.1f}   min={np.min(mx):6.1f}   max={np.max(mx):6.1f}"
+    )
+    print(
+        f"  Color dist:   mean={np.mean(cd):.4f}  min={np.min(cd):.4f}  max={np.max(cd):.4f}"
+    )
     print()
 
     print("TEMPORAL COHERENCE (mean frame-to-frame diff, lower = smoother)")
     print("-" * 40)
     print(f"  Reference: {results['ref_temporal_coherence']:.2f}")
     print(f"  Test:      {results['test_temporal_coherence']:.2f}")
-    ratio = results["test_temporal_coherence"] / (results["ref_temporal_coherence"] + 1e-10)
-    print(f"  Ratio:     {ratio:.2f}x {'(test is smoother)' if ratio < 1 else '(test is jerkier)' if ratio > 1.05 else '(similar)'}")
+    ratio = results["test_temporal_coherence"] / (
+        results["ref_temporal_coherence"] + 1e-10
+    )
+    print(
+        f"  Ratio:     {ratio:.2f}x {'(test is smoother)' if ratio < 1 else '(test is jerkier)' if ratio > 1.05 else '(similar)'}"
+    )
     print()
 
     # Identify worst frames
@@ -190,7 +204,9 @@ def print_report(results, ref_path, test_path):
     print("-" * 40)
     worst_idx = np.argsort(psnr)[:5]
     for i in worst_idx:
-        print(f"  Frame {i:4d}: PSNR={psnr[i]:6.2f} dB  SSIM={ssim[i]:.4f}  mean_diff={md[i]:.2f}")
+        print(
+            f"  Frame {i:4d}: PSNR={psnr[i]:6.2f} dB  SSIM={ssim[i]:.4f}  mean_diff={md[i]:.2f}"
+        )
     print()
 
     # Quality assessment
@@ -210,7 +226,9 @@ def print_report(results, ref_path, test_path):
         grade = "Very different"
     print(f"  Overall: {grade} (PSNR={mean_psnr:.1f} dB, SSIM={mean_ssim:.4f})")
     if mean_psnr < 30:
-        print("  ⚠  Videos differ significantly — likely a bug or different generation seed")
+        print(
+            "  ⚠  Videos differ significantly — likely a bug or different generation seed"
+        )
     print("=" * 72)
 
 
@@ -242,9 +260,7 @@ def main():
     parser.add_argument(
         "--diff-video", help="Save side-by-side diff visualization to this path"
     )
-    parser.add_argument(
-        "--max-frames", type=int, help="Compare only first N frames"
-    )
+    parser.add_argument("--max-frames", type=int, help="Compare only first N frames")
     parser.add_argument(
         "--ssim-win", type=int, default=7, help="SSIM window size (default: 7)"
     )
@@ -254,26 +270,29 @@ def main():
         default=5.0,
         help="Diff heatmap amplification (default: 5.0)",
     )
-    parser.add_argument(
-        "--csv", help="Export per-frame metrics to CSV file"
-    )
+    parser.add_argument("--csv", help="Export per-frame metrics to CSV file")
     args = parser.parse_args()
 
     print(f"Loading reference: {args.reference}")
     ref_frames, ref_fps = load_video(args.reference, args.max_frames)
-    print(f"  → {len(ref_frames)} frames, {ref_fps:.1f} fps, {ref_frames[0].shape[1]}x{ref_frames[0].shape[0]}")
+    print(
+        f"  → {len(ref_frames)} frames, {ref_fps:.1f} fps, {ref_frames[0].shape[1]}x{ref_frames[0].shape[0]}"
+    )
 
     print(f"Loading test: {args.test}")
     test_frames, test_fps = load_video(args.test, args.max_frames)
-    print(f"  → {len(test_frames)} frames, {test_fps:.1f} fps, {test_frames[0].shape[1]}x{test_frames[0].shape[0]}")
+    print(
+        f"  → {len(test_frames)} frames, {test_fps:.1f} fps, {test_frames[0].shape[1]}x{test_frames[0].shape[0]}"
+    )
 
     if ref_frames[0].shape != test_frames[0].shape:
-        print(f"Warning: resolution mismatch {ref_frames[0].shape} vs {test_frames[0].shape}")
+        print(
+            f"Warning: resolution mismatch {ref_frames[0].shape} vs {test_frames[0].shape}"
+        )
         print("Resizing test frames to match reference...")
         h, w = ref_frames[0].shape[:2]
         test_frames = [
-            cv2.resize(f, (w, h), interpolation=cv2.INTER_LANCZOS4)
-            for f in test_frames
+            cv2.resize(f, (w, h), interpolation=cv2.INTER_LANCZOS4) for f in test_frames
         ]
 
     print("Computing metrics...")
@@ -282,23 +301,29 @@ def main():
     print_report(results, args.reference, args.test)
 
     if args.diff_video:
-        save_diff_video(ref_frames, test_frames, args.diff_video, ref_fps, args.diff_scale)
+        save_diff_video(
+            ref_frames, test_frames, args.diff_video, ref_fps, args.diff_scale
+        )
 
     if args.csv:
         import csv
 
         with open(args.csv, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["frame", "psnr", "ssim", "mean_diff", "max_diff", "color_dist"])
+            writer.writerow(
+                ["frame", "psnr", "ssim", "mean_diff", "max_diff", "color_dist"]
+            )
             for i in range(results["num_frames"]):
-                writer.writerow([
-                    i,
-                    f"{results['psnr'][i]:.4f}",
-                    f"{results['ssim'][i]:.6f}",
-                    f"{results['mean_diff'][i]:.4f}",
-                    f"{results['max_diff'][i]:.1f}",
-                    f"{results['color_dist'][i]:.6f}",
-                ])
+                writer.writerow(
+                    [
+                        i,
+                        f"{results['psnr'][i]:.4f}",
+                        f"{results['ssim'][i]:.6f}",
+                        f"{results['mean_diff'][i]:.4f}",
+                        f"{results['max_diff'][i]:.1f}",
+                        f"{results['color_dist'][i]:.6f}",
+                    ]
+                )
         print(f"Per-frame metrics saved to {args.csv}")
 
 

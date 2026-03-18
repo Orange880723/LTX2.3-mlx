@@ -1,9 +1,6 @@
 """Tests for Wan2.2 I2V-14B support."""
 
 import mlx.core as mx
-import numpy as np
-import pytest
-
 from wan_test_helpers import _make_tiny_config
 
 
@@ -26,7 +23,7 @@ class TestI2VConfig:
     """Test I2V-14B config preset."""
 
     def test_wan22_i2v_14b_preset(self):
-        from mlx_video.models.wan.config import WanModelConfig
+        from mlx_video.models.wan_2.config import WanModelConfig
 
         config = WanModelConfig.wan22_i2v_14b()
         assert config.model_type == "i2v"
@@ -42,7 +39,7 @@ class TestI2VConfig:
         assert config.vae_z_dim == 16
 
     def test_i2v_vs_t2v_differences(self):
-        from mlx_video.models.wan.config import WanModelConfig
+        from mlx_video.models.wan_2.config import WanModelConfig
 
         i2v = WanModelConfig.wan22_i2v_14b()
         t2v = WanModelConfig.wan22_t2v_14b()
@@ -54,7 +51,7 @@ class TestI2VConfig:
         assert i2v.sample_shift == 5.0 and t2v.sample_shift == 12.0
 
     def test_i2v_serialization_roundtrip(self):
-        from mlx_video.models.wan.config import WanModelConfig
+        from mlx_video.models.wan_2.config import WanModelConfig
 
         config = WanModelConfig.wan22_i2v_14b()
         d = config.to_dict()
@@ -69,7 +66,7 @@ class TestModelYParameter:
 
     def test_forward_without_y(self):
         """Standard T2V forward pass (no y) still works."""
-        from mlx_video.models.wan.model import WanModel
+        from mlx_video.models.wan_2.wan_2 import WanModel
 
         config = _make_tiny_config()
         model = WanModel(config)
@@ -88,7 +85,7 @@ class TestModelYParameter:
 
     def test_forward_with_y(self):
         """I2V forward pass with y channel concatenation."""
-        from mlx_video.models.wan.model import WanModel
+        from mlx_video.models.wan_2.wan_2 import WanModel
 
         config = _make_tiny_i2v_config()
         model = WanModel(config)
@@ -111,7 +108,7 @@ class TestModelYParameter:
 
     def test_y_none_is_noop(self):
         """Passing y=None should be identical to not passing y."""
-        from mlx_video.models.wan.model import WanModel
+        from mlx_video.models.wan_2.wan_2 import WanModel
 
         config = _make_tiny_config()
         model = WanModel(config)
@@ -132,7 +129,7 @@ class TestModelYParameter:
 
     def test_batched_cfg_with_y(self):
         """Batched CFG (B=2) with y should work."""
-        from mlx_video.models.wan.model import WanModel
+        from mlx_video.models.wan_2.wan_2 import WanModel
 
         config = _make_tiny_i2v_config()
         model = WanModel(config)
@@ -145,7 +142,10 @@ class TestModelYParameter:
         latents = mx.random.normal((C_noise, F, H, W))
         y = mx.random.normal((C_y, F, H, W))
         t = mx.array([500.0, 500.0])
-        ctx = [mx.random.normal((6, config.text_dim)), mx.random.normal((6, config.text_dim))]
+        ctx = [
+            mx.random.normal((6, config.text_dim)),
+            mx.random.normal((6, config.text_dim)),
+        ]
 
         out = model([latents, latents], t, ctx, seq_len, y=[y, y])
         mx.eval(out[0], out[1])
@@ -158,16 +158,18 @@ class TestVAEEncoder:
     """Test Wan2.1 VAE encoder."""
 
     def test_encoder3d_instantiation(self):
-        from mlx_video.models.wan.vae import Encoder3d
+        from mlx_video.models.wan_2.vae import Encoder3d
 
-        enc = Encoder3d(dim=32, z_dim=8)  # z_dim=8 (will output 8ch, but WanVAE wraps with z*2)
+        enc = Encoder3d(
+            dim=32, z_dim=8
+        )  # z_dim=8 (will output 8ch, but WanVAE wraps with z*2)
         assert enc.conv1 is not None
         assert len(enc.downsamples) > 0
         assert len(enc.middle) == 3
 
     def test_encoder3d_output_shape(self):
         """Encoder should downsample spatially by 8x and temporally by 4x."""
-        from mlx_video.models.wan.vae import Encoder3d
+        from mlx_video.models.wan_2.vae import Encoder3d
 
         enc = Encoder3d(dim=32, z_dim=8)
         # Random input: [B=1, 3, T=5, H=32, W=32]
@@ -184,7 +186,7 @@ class TestVAEEncoder:
 
     def test_wan_vae_encode(self):
         """WanVAE with encoder=True should produce normalized latents."""
-        from mlx_video.models.wan.vae import WanVAE
+        from mlx_video.models.wan_2.vae import WanVAE
 
         vae = WanVAE(z_dim=16, encoder=True)
         # Input: [B=1, 3, T=5, H=32, W=32]
@@ -196,20 +198,20 @@ class TestVAEEncoder:
 
     def test_wan_vae_encoder_flag(self):
         """WanVAE without encoder flag should not have encoder attribute."""
-        from mlx_video.models.wan.vae import WanVAE
+        from mlx_video.models.wan_2.vae import WanVAE
 
         vae_no_enc = WanVAE(z_dim=4, encoder=False)
-        assert not hasattr(vae_no_enc, 'encoder')
+        assert not hasattr(vae_no_enc, "encoder")
 
         vae_enc = WanVAE(z_dim=4, encoder=True)
-        assert hasattr(vae_enc, 'encoder')
+        assert hasattr(vae_enc, "encoder")
 
 
 class TestResampleDownsample:
     """Test downsample modes in Resample."""
 
     def test_downsample2d(self):
-        from mlx_video.models.wan.vae import Resample
+        from mlx_video.models.wan_2.vae import Resample
 
         r = Resample(dim=16, mode="downsample2d")
         x = mx.random.normal((1, 16, 2, 8, 8))
@@ -219,7 +221,7 @@ class TestResampleDownsample:
         assert out.shape == (1, 16, 2, 4, 4)
 
     def test_downsample3d(self):
-        from mlx_video.models.wan.vae import Resample
+        from mlx_video.models.wan_2.vae import Resample
 
         r = Resample(dim=16, mode="downsample3d")
         x = mx.random.normal((1, 16, 4, 8, 8))
@@ -229,7 +231,7 @@ class TestResampleDownsample:
         assert out.shape == (1, 16, 2, 4, 4)
 
     def test_upsample2d_still_works(self):
-        from mlx_video.models.wan.vae import Resample
+        from mlx_video.models.wan_2.vae import Resample
 
         r = Resample(dim=16, mode="upsample2d")
         x = mx.random.normal((1, 16, 2, 4, 4))
@@ -238,7 +240,7 @@ class TestResampleDownsample:
         assert out.shape == (1, 8, 2, 8, 8)
 
     def test_upsample3d_still_works(self):
-        from mlx_video.models.wan.vae import Resample
+        from mlx_video.models.wan_2.vae import Resample
 
         r = Resample(dim=16, mode="upsample3d")
         x = mx.random.normal((1, 16, 2, 4, 4))
@@ -258,7 +260,9 @@ class TestI2VMaskConstruction:
 
         # Build mask following reference logic
         msk = mx.ones((1, num_frames, h_latent, w_latent))
-        msk = mx.concatenate([msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1)
+        msk = mx.concatenate(
+            [msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1
+        )
         msk = mx.concatenate([mx.repeat(msk[:, :1], 4, axis=1), msk[:, 1:]], axis=1)
         msk = msk.reshape(1, msk.shape[1] // 4, 4, h_latent, w_latent)
         msk = msk.transpose(0, 2, 1, 3, 4)[0]  # [4, T_lat, H_lat, W_lat]
@@ -272,7 +276,9 @@ class TestI2VMaskConstruction:
         t_latent = (num_frames - 1) // 4 + 1  # = 3
 
         msk = mx.ones((1, num_frames, h_latent, w_latent))
-        msk = mx.concatenate([msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1)
+        msk = mx.concatenate(
+            [msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1
+        )
         msk = mx.concatenate([mx.repeat(msk[:, :1], 4, axis=1), msk[:, 1:]], axis=1)
         msk = msk.reshape(1, msk.shape[1] // 4, 4, h_latent, w_latent)
         msk = msk.transpose(0, 2, 1, 3, 4)[0]
@@ -301,9 +307,9 @@ class TestI2VEndToEndPipeline:
 
     def test_full_i2v_pipeline(self):
         """End-to-end I2V: synthetic image → VAE encode → build y → denoise → VAE decode."""
-        from mlx_video.models.wan.model import WanModel
-        from mlx_video.models.wan.scheduler import FlowMatchEulerScheduler
-        from mlx_video.models.wan.vae import WanVAE
+        from mlx_video.models.wan_2.wan_2 import WanModel
+        from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
+        from mlx_video.models.wan_2.vae import WanVAE
 
         mx.random.seed(0)
 
@@ -311,7 +317,9 @@ class TestI2VEndToEndPipeline:
         config = _make_tiny_i2v_config()
         config.vae_z_dim = 16
         config.out_dim = 16  # must match VAE z_dim for decode
-        config.in_dim = 16 + 4 + 16  # noise(out_dim=16) + mask(4) + image(z_dim=16) = 36
+        config.in_dim = (
+            16 + 4 + 16
+        )  # noise(out_dim=16) + mask(4) + image(z_dim=16) = 36
         model = WanModel(config)
 
         # --- Tiny VAE (with encoder) ---
@@ -323,10 +331,13 @@ class TestI2VEndToEndPipeline:
         img = mx.random.uniform(-1, 1, (1, 3, 1, height, width))
 
         # Build video: first frame = image, rest = zeros -> [1, 3, F, H, W]
-        video = mx.concatenate([
-            img,
-            mx.zeros((1, 3, num_frames - 1, height, width)),
-        ], axis=2)
+        video = mx.concatenate(
+            [
+                img,
+                mx.zeros((1, 3, num_frames - 1, height, width)),
+            ],
+            axis=2,
+        )
 
         # --- VAE encode ---
         z_video = vae.encode(video)  # [1, z_dim, T_lat, H_lat, W_lat]
@@ -341,7 +352,9 @@ class TestI2VEndToEndPipeline:
 
         # --- Build I2V mask (4 channels) ---
         msk = mx.ones((1, num_frames, h_latent, w_latent))
-        msk = mx.concatenate([msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1)
+        msk = mx.concatenate(
+            [msk[:, :1], mx.zeros((1, num_frames - 1, h_latent, w_latent))], axis=1
+        )
         msk = mx.concatenate([mx.repeat(msk[:, :1], 4, axis=1), msk[:, 1:]], axis=1)
         msk = msk.reshape(1, msk.shape[1] // 4, 4, h_latent, w_latent)
         msk = msk.transpose(0, 2, 1, 3, 4)[0]  # [4, T_lat, H_lat, W_lat]
@@ -397,8 +410,8 @@ class TestDualModelSwitching:
 
     def test_model_selection_by_timestep(self):
         """Verify high_noise model used for timesteps >= boundary, low_noise otherwise."""
-        from mlx_video.models.wan.model import WanModel
-        from mlx_video.models.wan.scheduler import FlowMatchEulerScheduler
+        from mlx_video.models.wan_2.wan_2 import WanModel
+        from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
 
         mx.random.seed(1)
         config = _make_tiny_i2v_config()
@@ -453,7 +466,9 @@ class TestDualModelSwitching:
             noise_pred_cond, noise_pred_uncond = preds[0], preds[1]
             noise_pred = noise_pred_uncond + gs * (noise_pred_cond - noise_pred_uncond)
 
-            latents = sched.step(noise_pred[None], timestep_val, latents[None]).squeeze(0)
+            latents = sched.step(noise_pred[None], timestep_val, latents[None]).squeeze(
+                0
+            )
             mx.eval(latents)
 
         # With shift=5.0, early timesteps should be high (>=900), later ones low
@@ -461,17 +476,17 @@ class TestDualModelSwitching:
         assert len(low_used_steps) > 0, "Low-noise model was never selected"
         # High-noise steps should come before low-noise steps (timesteps decrease)
         if high_used_steps and low_used_steps:
-            assert max(high_used_steps) < min(low_used_steps) or \
-                   min(high_used_steps) < max(low_used_steps), \
-                   "Model switching should happen during the loop"
+            assert max(high_used_steps) < min(low_used_steps) or min(
+                high_used_steps
+            ) < max(low_used_steps), "Model switching should happen during the loop"
 
         assert latents.shape == (C_noise, F, H, W)
         assert not mx.any(mx.isnan(latents)).item()
 
     def test_guide_scale_tuple_applied_per_model(self):
         """Verify (low_gs, high_gs) tuple applies different scales per model."""
-        from mlx_video.models.wan.model import WanModel
-        from mlx_video.models.wan.scheduler import FlowMatchEulerScheduler
+        from mlx_video.models.wan_2.wan_2 import WanModel
+        from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
 
         mx.random.seed(2)
         config = _make_tiny_i2v_config()
@@ -515,7 +530,9 @@ class TestDualModelSwitching:
                 y=[y_i2v, y_i2v],
             )
             noise_pred = pred[1] + gs * (pred[0] - pred[1])
-            latents = sched.step(noise_pred[None], timestep_val, latents[None]).squeeze(0)
+            latents = sched.step(noise_pred[None], timestep_val, latents[None]).squeeze(
+                0
+            )
             mx.eval(latents)
 
         # Verify both guide scales were used
@@ -528,8 +545,8 @@ class TestDualModelSwitching:
 
     def test_single_model_fallback_with_tuple_guide_scale(self):
         """When dual_model=False, guide_scale tuple should use first element."""
-        from mlx_video.models.wan.model import WanModel
-        from mlx_video.models.wan.scheduler import FlowMatchEulerScheduler
+        from mlx_video.models.wan_2.wan_2 import WanModel
+        from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
 
         mx.random.seed(3)
         config = _make_tiny_config()

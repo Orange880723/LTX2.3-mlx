@@ -3,7 +3,8 @@
 
 def _make_tiny_config():
     """Create a tiny WanModelConfig for testing."""
-    from mlx_video.models.wan.config import WanModelConfig
+    from mlx_video.models.wan_2.config import WanModelConfig
+
     config = WanModelConfig()
     # Override to tiny values
     config.dim = 64

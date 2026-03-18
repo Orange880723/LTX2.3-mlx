@@ -20,6 +20,8 @@ dependencies = [
     "opencv-python>=4.12.0.88",
     "Pillow>=10.3.0",
     "mlx-vlm",
+    "rich>=14.2.0",
+    "librosa>=0.10.0",
     "imageio>=2.37.2",
     "imageio-ffmpeg>=0.6.0",
     "ftfy",
@@ -44,8 +46,8 @@ Repository = "https://github.com/Blaizzy/mlx-video"
 Issues = "https://github.com/Blaizzy/mlx-video/issues"
 
 [project.scripts]
-"mlx_video.generate" = "mlx_video.generate:main"
-"mlx_video.generate_wan" = "mlx_video.generate_wan:main"
+"mlx_video.ltx_2.generate" = "mlx_video.models.ltx_2.generate:main"
+"mlx_video.wan_2.generate" = "mlx_video.models.wan_2.generate:main"
 
 [tool.setuptools.packages.find]
 include = ["mlx_video*"]
@@ -57,3 +59,4 @@ version = {attr = "mlx_video.version.__version__"}
 dev = [
     "pytest",
 ]
+

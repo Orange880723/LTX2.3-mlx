@@ -1,29 +1,36 @@
 import math
-from typing import Optional, Tuple, Union
+from functools import partial
+from pathlib import Path
+from typing import Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from functools import partial
-from pathlib import Path
 from huggingface_hub import snapshot_download
 from PIL import Image
+
 
 def get_model_path(model_repo: str):
     """Get or download LTX-2 model path."""
     try:
+        if Path(model_repo).exists():
+            return Path(model_repo)
         return Path(snapshot_download(repo_id=model_repo, local_files_only=True))
     except Exception:
         print("Downloading LTX-2 model weights...")
-        return Path(snapshot_download(
-            repo_id=model_repo,
-            local_files_only=False,
-            resume_download=True,
-            allow_patterns=["*.safetensors", "*.json"],
-        ))
+        return Path(
+            snapshot_download(
+                repo_id=model_repo,
+                local_files_only=False,
+                resume_download=True,
+                allow_patterns=["*.safetensors", "*.json"],
+            )
+        )
+
 
 def apply_quantization(model: nn.Module, weights: mx.array, quantization: dict):
     if quantization is not None:
+
         def get_class_predicate(p, m):
             # Handle custom per layer quantizations
             if p in quantization:
@@ -44,22 +51,23 @@ def apply_quantization(model: nn.Module, weights: mx.array, quantization: dict):
             class_predicate=get_class_predicate,
         )
 
-@partial(mx.compile, shapeless=True)  
+
+@partial(mx.compile, shapeless=True)
 def rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
     return mx.fast.rms_norm(x, mx.ones((x.shape[-1],), dtype=x.dtype), eps)
 
 
-
 @partial(mx.compile, shapeless=True)
 def to_denoised(
-    noisy: mx.array,
-    velocity: mx.array,
-    sigma: mx.array | float
+    noisy: mx.array, velocity: mx.array, sigma: mx.array | float
 ) -> mx.array:
     """Convert velocity prediction to denoised output.
 
     Given noisy input x_t and velocity prediction v, compute denoised x_0:
     x_0 = x_t - sigma * v
+
+    Uses float32 for computation precision (matching PyTorch behavior),
+    then converts back to input dtype.
 
     Args:
         noisy: Noisy input tensor x_t
@@ -69,16 +77,21 @@ def to_denoised(
     Returns:
         Denoised tensor x_0
     """
+    original_dtype = noisy.dtype
+
+    # Cast to float32 for precision (PyTorch uses calc_dtype=torch.float32)
+    noisy_f32 = noisy.astype(mx.float32)
+    velocity_f32 = velocity.astype(mx.float32)
+
     if isinstance(sigma, (int, float)):
-        # Convert to array with matching dtype to avoid float32 promotion
-        sigma_arr = mx.array(sigma, dtype=velocity.dtype)
-        return noisy - sigma_arr * velocity
+        sigma_f32 = mx.array(sigma, dtype=mx.float32)
     else:
-        # sigma is per-sample - ensure dtype matches
-        sigma = sigma.astype(velocity.dtype)
-        while sigma.ndim < velocity.ndim:
-            sigma = mx.expand_dims(sigma, axis=-1)
-        return noisy - sigma * velocity
+        sigma_f32 = sigma.astype(mx.float32)
+        while sigma_f32.ndim < velocity_f32.ndim:
+            sigma_f32 = mx.expand_dims(sigma_f32, axis=-1)
+
+    result = noisy_f32 - sigma_f32 * velocity_f32
+    return result.astype(original_dtype)
 
 
 def repeat_interleave(x: mx.array, repeats: int, axis: int = -1) -> mx.array:
@@ -274,7 +287,9 @@ def prepare_image_for_encoding(
         if image_np.max() <= 1.0:
             image_np = (image_np * 255).astype(np.uint8)
         pil_image = Image.fromarray(image_np)
-        pil_image = pil_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        pil_image = pil_image.resize(
+            (target_width, target_height), Image.Resampling.LANCZOS
+        )
         image = mx.array(np.array(pil_image).astype(np.float32) / 255.0)
 
     # Normalize to [-1, 1]

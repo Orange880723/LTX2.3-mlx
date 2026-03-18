@@ -1,5 +1,9 @@
 .env
-claude.md
+.claude/*
+CLAUDE.md
+config.json
+*.safetensors
+*.safetensors.index.json
 .DS_Store
 **.pyc
 __pycache__/*

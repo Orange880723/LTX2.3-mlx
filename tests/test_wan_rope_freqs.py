@@ -28,7 +28,7 @@ class TestRoPEFrequencyConstruction:
     def _get_model_freqs(self, dim=64, num_heads=4):
         """Instantiate a tiny WanModel and return its .freqs tensor."""
         from mlx_video.models.wan2.config import WanModelConfig
-        from mlx_video.models.wan2.model import WanModel
+        from mlx_video.models.wan2.wan2 import WanModel
 
         config = WanModelConfig()
         config.dim = dim

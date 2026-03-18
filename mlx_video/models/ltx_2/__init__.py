@@ -4,4 +4,4 @@ from mlx_video.models.ltx_2.config import (
     LTXModelType,
     TransformerConfig,
 )
-from mlx_video.models.ltx_2.ltx import LTXModel, X0Model
+from mlx_video.models.ltx_2.ltx_2 import LTXModel, X0Model

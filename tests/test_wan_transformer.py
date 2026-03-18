@@ -153,7 +153,7 @@ class TestFloat32Modulation:
 
     def test_head_modulation_float32(self):
         """Head modulation should be float32 even with bf16 e input."""
-        from mlx_video.models.wan2.model import Head
+        from mlx_video.models.wan2.wan2 import Head
 
         head = Head(self.dim, 4, (1, 2, 2))
         x = mx.random.normal((1, 8, self.dim))
@@ -164,7 +164,7 @@ class TestFloat32Modulation:
 
     def test_model_time_embedding_float32(self):
         """sinusoidal_embedding_1d output must be float32."""
-        from mlx_video.models.wan2.model import sinusoidal_embedding_1d
+        from mlx_video.models.wan2.wan2 import sinusoidal_embedding_1d
 
         t = mx.array([500.0])
         emb = sinusoidal_embedding_1d(256, t)
@@ -173,7 +173,7 @@ class TestFloat32Modulation:
 
     def test_model_per_token_time_embedding_float32(self):
         """Per-token time embeddings (I2V) should also be float32."""
-        from mlx_video.models.wan2.model import sinusoidal_embedding_1d
+        from mlx_video.models.wan2.wan2 import sinusoidal_embedding_1d
 
         t = mx.array([[0.0, 100.0, 200.0, 300.0]])  # [B=1, L=4]
         emb = sinusoidal_embedding_1d(256, t)

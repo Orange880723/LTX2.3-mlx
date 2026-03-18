@@ -14,7 +14,7 @@ class TestEndToEnd:
 
     def test_tiny_model_denoise_step(self):
         """Simulate one denoising step with tiny model."""
-        from mlx_video.models.wan2.model import WanModel
+        from mlx_video.models.wan2.wan2 import WanModel
         from mlx_video.models.wan2.scheduler import FlowMatchEulerScheduler
 
         mx.random.seed(42)
@@ -43,7 +43,7 @@ class TestEndToEnd:
 
     def test_tiny_model_full_loop(self):
         """Run a complete (tiny) diffusion loop."""
-        from mlx_video.models.wan2.model import WanModel
+        from mlx_video.models.wan2.wan2 import WanModel
         from mlx_video.models.wan2.scheduler import FlowMatchEulerScheduler
 
         mx.random.seed(123)
@@ -201,7 +201,7 @@ class TestDimensionAlignment:
 
     def test_patchify_valid_after_alignment(self):
         """After alignment, patchify should succeed without reshape errors."""
-        from mlx_video.models.wan2.model import WanModel
+        from mlx_video.models.wan2.wan2 import WanModel
 
         config = _make_tiny_config()
         model = WanModel(config)

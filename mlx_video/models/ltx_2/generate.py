@@ -33,7 +33,7 @@ from mlx_video.models.ltx_2.conditioning import (
     apply_conditioning,
 )
 from mlx_video.models.ltx_2.conditioning.latent import LatentState, apply_denoise_mask
-from mlx_video.models.ltx_2.ltx import LTXModel
+from mlx_video.models.ltx_2.ltx_2 import LTXModel
 from mlx_video.models.ltx_2.transformer import Modality
 from mlx_video.models.ltx_2.upsampler import load_upsampler, upsample_latents
 from mlx_video.models.ltx_2.video_vae import VideoEncoder

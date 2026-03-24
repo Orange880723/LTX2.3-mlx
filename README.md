@@ -1,3 +1,18 @@
+> [!NOTE]
+> ### 🙏 Acknowledgement & Project Scope
+>
+> This repository is a **humble research extension** built entirely upon the outstanding foundation of **[mlx-video](https://github.com/Blaizzy/mlx-video)** by **[@Blaizzy](https://github.com/Blaizzy)**.
+>
+> - **Origin**: Created as an independent sandbox to experiment with specific features, **standing on the shoulders of the original giants**.
+> - **Intent**: Purely for **research, learning, and community exploration**. We do **not** intend to compete with or replace the upstream project.
+> - **Credit**: All core architecture, wisdom, and initial implementation belong to [@Blaizzy](https://github.com/Blaizzy). Any improvements here are minor iterations inspired by their work.
+>
+> 👉 **For the stable, production-ready version, please strictly refer to the [official repository](https://github.com/Blaizzy/mlx-video).**
+>
+> *We hope these experimental tweaks might offer some value back to the community.*
+
+---
+
 # mlx-video
 
 MLX-Video is the best package for inference and finetuning of Image-Video-Audio generation models on your Mac using MLX.

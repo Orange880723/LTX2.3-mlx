@@ -193,6 +193,7 @@ class TransformerArgsPreprocessor:
             enabled=modality.enabled,
             prompt_timesteps=prompt_timestep,
             prompt_embedded_timestep=prompt_embedded_timestep,
+            self_attention_mask=modality.self_attention_mask,
         )
 
 

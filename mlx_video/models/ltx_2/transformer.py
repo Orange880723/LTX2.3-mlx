@@ -22,6 +22,10 @@ class Modality:
     positional_embeddings: Optional[Tuple[mx.array, mx.array]] = None
     # Raw sigma value (scalar per batch) for prompt adaln (LTX-2.3)
     sigma: Optional[mx.array] = None
+    # IC-LoRA: optional 2-D self-attention mask (B, N_total, N_total) where
+    # N_total = N_target + N_ref.  Values in [0, 1]; converted to additive
+    # log-space mask by _prepare_attention_mask before attention.
+    self_attention_mask: Optional[mx.array] = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,8 @@ class TransformerArgs:
     # LTX-2.3: prompt-conditioned timestep embeddings for cross-attention
     prompt_timesteps: Optional[mx.array] = None
     prompt_embedded_timestep: Optional[mx.array] = None
+    # IC-LoRA: optional 2-D self-attention mask (B, N_total, N_total)
+    self_attention_mask: Optional[mx.array] = None
 
 
 class BasicAVTransformerBlock(nn.Module):
@@ -285,6 +291,7 @@ class BasicAVTransformerBlock(nn.Module):
                 + self.attn1(
                     norm_vx,
                     pe=video.positional_embeddings,
+                    mask=video.self_attention_mask,  # IC-LoRA: token-space mask
                     skip_attention=skip_video_self_attn,
                 )
                 * vgate_msa

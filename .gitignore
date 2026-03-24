@@ -6,5 +6,10 @@ config.json
 *.safetensors.index.json
 .DS_Store
 **.pyc
-__pycache__/*
+__pycache__
 *.egg-info/*
+dy_research/
+.kiro
+.venv
+.pytest_cache
+mlx_video.egg-info

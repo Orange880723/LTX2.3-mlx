@@ -8,7 +8,7 @@ Four pipeline types are available via the `--pipeline` flag:
 
 | Pipeline | Description | CFG | Stages | Speed |
 |----------|-------------|-----|--------|-------|
-| `distilled` (default) | Fixed sigma schedule, no CFG | No | 2 (8+3 steps) | Fastest |
+| `distilled` (default) | Fixed sigma schedule, no CFG, optional LoRA | No | 2 (8+3 steps) | Fastest |
 | `dev` | Dynamic sigmas, constant CFG | Yes | 1 (30 steps) | Medium |
 | `dev-two-stage` | Dev + LoRA refinement | Yes (stage 1) | 2 (30+3 steps) | Slow |
 | `dev-two-stage-hq` | res_2s sampler + LoRA both stages | Yes (stage 1) | 2 (15+3 steps) | Slow, highest quality |
@@ -20,6 +20,11 @@ Four pipeline types are available via the `--pipeline` flag:
 ```bash
 # Distilled (default) - fast, two-stage
 uv run mlx_video.generate --prompt "Two dogs wearing sunglasses, cinematic, sunset" -n 97 --width 768
+
+# Distilled with LoRA (both stages)
+uv run mlx_video.generate --prompt "Camera dolly out of a forest" \
+    --lora-path Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-Out \
+    --lora-strength-stage-1 0.3 --lora-strength-stage-2 0.6
 
 # Dev - single-stage with CFG
 uv run mlx_video.generate --pipeline dev --prompt "A cinematic scene" --cfg-scale 3.0
@@ -97,10 +102,16 @@ uv run mlx_video.generate --pipeline dev --prompt "Ocean waves crashing" --audio
 
 ### LoRA
 
-LoRA weights can be loaded from a file, directory, or HuggingFace repo:
+LoRA weights can be loaded from a file, directory, or HuggingFace repo. Supported by `distilled`, `dev-two-stage`, and `dev-two-stage-hq` pipelines:
 
 ```bash
-# From HuggingFace repo
+# Distilled with LoRA (two-stage control)
+uv run mlx_video.generate \
+    --prompt "Camera dolly out of a forest" \
+    --lora-path Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-Out \
+    --lora-strength-stage-1 0.25 --lora-strength-stage-2 0.5
+
+# Dev-two-stage with LoRA (single strength)
 uv run mlx_video.generate --pipeline dev-two-stage \
     --prompt "Camera dolly out of a forest" \
     --lora-path Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-Out \
@@ -202,10 +213,11 @@ uv run mlx_video.generate --prompt "A sunset" --model-repo ./LTX-2.3-distilled \
 | `--lora-path` | auto-detect | Path to LoRA file, directory, or HuggingFace repo |
 | `--lora-strength` | 1.0 | LoRA merge strength |
 
-### Dev-Two-Stage HQ
+### Dev-Two-Stage HQ / Distilled LoRA
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--lora-path` | None | Path to LoRA file, directory, or HuggingFace repo |
 | `--lora-strength-stage-1` | 0.25 | LoRA strength for stage 1 |
 | `--lora-strength-stage-2` | 0.5 | LoRA strength for stage 2 |
 
@@ -214,10 +226,12 @@ HQ defaults: 15 steps (vs 30), `cfg-rescale` 0.45 (vs 0.7), STG disabled. Uses t
 ## How It Works
 
 ### Distilled Pipeline (default)
-1. **Stage 1**: Generate at half resolution with 8 denoising steps (fixed sigmas)
+1. **Stage 1**: Generate at half resolution with 8 denoising steps (fixed sigmas), optional LoRA@0.25
 2. **Upsample**: Spatial upsampling via LatentUpsampler (x2 or x1.5, selectable via `--spatial-upscaler`)
-3. **Stage 2**: Refine at upsampled resolution with 3 denoising steps
+3. **Stage 2**: Refine at upsampled resolution with 3 denoising steps, optional LoRA@0.5 (additive)
 4. **Decode**: VAE decoder converts latents to RGB video
+
+When LoRA is enabled (`--lora-path`), the model applies LoRA weights at configurable strengths for each stage. Stage 2 strength is additive (e.g., 0.25 + 0.25 = 0.5 total).
 
 ### Dev Pipeline
 1. **Generate**: Full resolution with configurable steps and constant CFG

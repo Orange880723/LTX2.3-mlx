@@ -1,6 +1,92 @@
 """Unified video and audio-video generation pipeline for LTX-2.
 
 Supports both distilled (two-stage with upsampling) and dev (single-stage with CFG) pipelines.
+
+================================================================================
+📋 FILE STRUCTURE INDEX (for AI agents and developers)
+================================================================================
+
+This file is ~3400 lines. Use this index to quickly locate sections:
+
+SECTION 1: IMPORTS & CONSTANTS (Lines 1-100)
+├─ Imports: mlx, PIL, rich, etc.
+├─ PipelineType enum: DISTILLED, DEV, DEV_TWO_STAGE, DEV_TWO_STAGE_HQ
+├─ Constants: STAGE_1_SIGMAS, STAGE_2_SIGMAS, AUDIO_*, DEFAULT_NEGATIVE_PROMPT
+└─ Helper functions: load_and_merge_lora, cfg_delta, apg_delta
+
+SECTION 2: SCHEDULERS & POSITION GRIDS (Lines 100-400)
+├─ ltx2_scheduler(): Dynamic sigma generation
+├─ create_position_grid(): Video RoPE positions
+├─ create_audio_position_grid(): Audio RoPE positions
+└─ compute_audio_frames(): Audio frame calculation
+
+SECTION 3: DENOISING LOOPS (Lines 400-1000)
+├─ denoise_distilled(): Two-stage fixed sigmas, no CFG (Lines ~400-600)
+├─ denoise_dev(): Single-stage with CFG/APG/STG (Lines ~600-800)
+└─ Helper functions: STG perturbation, CFG rescale, etc.
+
+SECTION 4: AUDIO-VIDEO DENOISING (Lines 1000-1400)
+├─ denoise_dev_av(): Joint A/V denoising with CFG
+├─ denoise_res2s_av(): res_2s sampler for HQ pipeline
+└─ Audio encoding/decoding helpers
+
+SECTION 5: MAIN GENERATION FUNCTION (Lines 1676-3200)
+├─ generate_video() signature (Lines 1676-1750)
+│   ├─ Basic params: prompt, seed, dimensions
+│   ├─ Pipeline selection: pipeline type
+│   ├─ Conditioning: image, audio_file
+│   ├─ Guidance: cfg_scale, stg_scale, apg
+│   └─ Enhancement: lora_path, enhance_prompt
+│
+├─ Pipeline branches:
+│   ├─ DISTILLED (Lines ~1900-2200)
+│   │   ├─ Stage 1: Low-res generation (8 steps)
+│   │   ├─ Upsample: Spatial upsampler (x2 or x1.5)
+│   │   └─ Stage 2: High-res refinement (3 steps)
+│   │
+│   ├─ DEV (Lines ~2200-2400)
+│   │   └─ Single-stage with CFG/APG/STG
+│   │
+│   ├─ DEV_TWO_STAGE (Lines ~2400-2700)
+│   │   ├─ Stage 1: Dev with CFG (half res)
+│   │   ├─ Upsample: Spatial upsampler
+│   │   └─ Stage 2: Distilled with LoRA (full res)
+│   │
+│   └─ DEV_TWO_STAGE_HQ (Lines ~2700-3000)
+│       ├─ Stage 1: res_2s + LoRA@0.25 (half res)
+│       ├─ Upsample: Spatial upsampler
+│       └─ Stage 2: res_2s + LoRA@0.5 (full res)
+│
+└─ Decoding & Output (Lines ~3000-3200)
+    ├─ VAE decode (with tiling support)
+    ├─ Audio decode (if enabled)
+    └─ Save video/audio files
+
+SECTION 6: CLI & UTILITIES (Lines 3200-3400)
+├─ Argument parser setup
+├─ Audio helpers: load_audio_decoder, load_vocoder_model
+├─ Video helpers: save_audio, mux_video_audio
+└─ main() entry point
+
+================================================================================
+🎯 QUICK NAVIGATION TIPS
+================================================================================
+
+To find specific functionality:
+- Pipeline logic: Search for "if pipeline == PipelineType.XXX"
+- Conditioning: Search for "apply_conditioning" or "VideoConditionByLatentIndex"
+- Guidance: Search for "cfg_scale", "stg_scale", "apg"
+- LoRA: Search for "load_and_merge_lora"
+- Audio: Search for "audio_latents" or "a2v"
+- Denoising: Search for "denoise_distilled" or "denoise_dev"
+
+To add new pipeline:
+1. Add enum to PipelineType (Line ~50)
+2. Add parameters to generate_video() (Line ~1676)
+3. Add branch in pipeline logic (Line ~1900+)
+4. Reuse existing components (denoise_*, vae_decoder, etc.)
+
+================================================================================
 """
 
 import argparse
@@ -55,6 +141,10 @@ class PipelineType(Enum):
         "dev-two-stage"  # Two-stage: dev (half res, CFG) + distilled LoRA (full res)
     )
     DEV_TWO_STAGE_HQ = "dev-two-stage-hq"  # Two-stage: res_2s sampler, LoRA both stages
+    KEYFRAME_INTERPOLATION = "keyframe-interpolation"  # Two-stage: keyframe interpolation with guiding latents
+    KEYFRAME_INTERPOLATION_FAST = "keyframe-interpolation-fast"  # Single-stage: fast keyframe interpolation (8 steps, no upsampler)
+    BFS_VIDEO_TO_VIDEO = "bfs-video-to-video"  # BFS face swap: concatenated video + LoRA + image guide
+    IC_LORA = "ic-lora"  # In-Context LoRA: reference video conditioning via token concat
 
 
 # Distilled model sigma schedules
@@ -466,6 +556,92 @@ def compute_audio_frames(num_video_frames: int, fps: float) -> int:
     return round(duration * AUDIO_LATENTS_PER_SECOND)
 
 
+def load_video_frames(
+    video_path: str,
+    height: int,
+    width: int,
+    num_frames: int,
+) -> mx.array:
+    """Load video frames from file and resize to target dimensions.
+    
+    Args:
+        video_path: Path to video file
+        height: Target height in pixels
+        width: Target width in pixels
+        num_frames: Number of frames to load
+        
+    Returns:
+        Video tensor of shape (num_frames, height, width, 3) in range [0, 255]
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise ImportError("opencv-python is required for video loading. Install with: pip install opencv-python")
+    
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
+    
+    frames = []
+    frame_count = 0
+    
+    while frame_count < num_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Convert BGR to RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Resize to target dimensions
+        frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+        
+        frames.append(frame)
+        frame_count += 1
+    
+    cap.release()
+    
+    if frame_count < num_frames:
+        console.print(f"[yellow]Warning: Video has only {frame_count} frames, requested {num_frames}. Padding with last frame.[/]")
+        # Pad with last frame if video is shorter
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
+    
+    # Stack frames: (F, H, W, 3)
+    video_array = np.stack(frames, axis=0)
+    return mx.array(video_array, dtype=mx.uint8)
+
+
+def encode_video_to_latents(
+    video_frames: mx.array,
+    vae_encoder: VideoEncoder,
+    dtype: mx.Dtype = mx.bfloat16,
+) -> mx.array:
+    """Encode video frames to latent space using VAE encoder.
+    
+    Args:
+        video_frames: Video tensor of shape (F, H, W, 3) in range [0, 255]
+        vae_encoder: VAE encoder model
+        dtype: Target dtype for encoding
+        
+    Returns:
+        Video latents of shape (1, 128, F, H//32, W//32)
+    """
+    # Normalize to [-1, 1]
+    video_normalized = (video_frames.astype(mx.float32) / 127.5) - 1.0
+    
+    # Rearrange to (1, 3, F, H, W) for VAE encoder
+    video_tensor = mx.transpose(video_normalized, (3, 0, 1, 2))  # (3, F, H, W)
+    video_tensor = mx.expand_dims(video_tensor, axis=0)  # (1, 3, F, H, W)
+    video_tensor = video_tensor.astype(dtype)
+    
+    # Encode to latents
+    latents = vae_encoder(video_tensor)
+    mx.eval(latents)
+    
+    return latents
+
+
 # =============================================================================
 # Distilled Pipeline Denoising (no CFG, fixed sigmas)
 # =============================================================================
@@ -483,10 +659,21 @@ def denoise_distilled(
     audio_positions: Optional[mx.array] = None,
     audio_embeddings: Optional[mx.array] = None,
     audio_frozen: bool = False,
+    # IC-LoRA: reference video conditioning (all None → standard distilled behaviour)
+    ic_ref_tokens: Optional[mx.array] = None,         # (B, N_ref, C)
+    ic_ref_positions: Optional[mx.array] = None,       # (B, 3, N_ref, 2)
+    ic_ref_timestep_scale: Optional[mx.array] = None,  # (B, N_ref) values = 1 - strength
+    ic_attention_mask: Optional[mx.array] = None,      # (B, N_t+N_r, N_t+N_r)
 ) -> tuple[mx.array, Optional[mx.array]]:
-    """Run denoising loop for distilled pipeline (no CFG)."""
+    """Run denoising loop for distilled pipeline (no CFG).
+
+    When ic_ref_tokens is provided the reference tokens are concatenated to the
+    target tokens every step (IC-LoRA mode).  The velocity output for the ref
+    part is discarded – only the first N_target velocities drive the Euler step.
+    """
     dtype = latents.dtype
     enable_audio = audio_latents is not None
+    enable_ic = ic_ref_tokens is not None
 
     if state is not None:
         latents = state.latent
@@ -496,7 +683,12 @@ def denoise_distilled(
     if enable_audio:
         audio_latents = audio_latents.astype(mx.float32)
 
-    desc = "[cyan]Denoising A/V[/]" if enable_audio else "[cyan]Denoising[/]"
+    if enable_audio:
+        desc = "[cyan]Denoising A/V[/]"
+    elif enable_ic:
+        desc = "[cyan]Denoising (IC-LoRA)[/]"
+    else:
+        desc = "[cyan]Denoising[/]"
     num_steps = len(sigmas) - 1
 
     with Progress(
@@ -528,15 +720,41 @@ def denoise_distilled(
             else:
                 timesteps = mx.full((b, num_tokens), sigma, dtype=dtype)
 
-            video_modality = Modality(
-                latent=latents_flat,
-                timesteps=timesteps,
-                positions=positions,
-                context=text_embeddings,
-                context_mask=None,
-                enabled=True,
-                sigma=mx.full((b,), sigma, dtype=dtype),
-            )
+            # ------------------------------------------------------------------
+            # IC-LoRA: concat reference tokens and build combined positions /
+            # timesteps before passing to the transformer.
+            # ------------------------------------------------------------------
+            if enable_ic:
+                # Concat latent tokens: [target | ref]
+                flat_with_ref = mx.concatenate(
+                    [latents_flat, ic_ref_tokens.astype(dtype)], axis=1
+                )
+                # Concat positions along N axis (dim 2)
+                pos_with_ref = mx.concatenate([positions, ic_ref_positions], axis=2)
+                # ref timestep = (1 - strength) * sigma  → 0 when strength=1 (ref is clean)
+                ref_ts = (ic_ref_timestep_scale * sigma).astype(dtype)
+                ts_with_ref = mx.concatenate([timesteps, ref_ts], axis=1)
+
+                video_modality = Modality(
+                    latent=flat_with_ref,
+                    timesteps=ts_with_ref,
+                    positions=pos_with_ref,
+                    context=text_embeddings,
+                    context_mask=None,
+                    enabled=True,
+                    sigma=mx.full((b,), sigma, dtype=dtype),
+                    self_attention_mask=ic_attention_mask,
+                )
+            else:
+                video_modality = Modality(
+                    latent=latents_flat,
+                    timesteps=timesteps,
+                    positions=positions,
+                    context=text_embeddings,
+                    context_mask=None,
+                    enabled=True,
+                    sigma=mx.full((b,), sigma, dtype=dtype),
+                )
 
             audio_modality = None
             if enable_audio:
@@ -572,11 +790,19 @@ def denoise_distilled(
             if audio_velocity is not None:
                 mx.eval(audio_velocity)
 
-            # Compute denoised (x0) using per-token timesteps in float32
+            # ------------------------------------------------------------------
+            # Compute denoised (x0) using per-token timesteps in float32.
+            # IC-LoRA: velocity shape is (B, N_t+N_r, C); strip ref tokens so
+            # the Euler update only touches the N_target positions.
+            # ------------------------------------------------------------------
             sigma_f32 = mx.array(sigma, dtype=mx.float32)
             latents_flat_f32 = mx.transpose(mx.reshape(latents, (b, c, -1)), (0, 2, 1))
             timesteps_f32 = mx.expand_dims(timesteps.astype(mx.float32), axis=-1)
-            x0_f32 = latents_flat_f32 - timesteps_f32 * velocity.astype(mx.float32)
+            if enable_ic:
+                velocity_target = velocity[:, :num_tokens, :]
+                x0_f32 = latents_flat_f32 - timesteps_f32 * velocity_target.astype(mx.float32)
+            else:
+                x0_f32 = latents_flat_f32 - timesteps_f32 * velocity.astype(mx.float32)
             denoised = mx.reshape(mx.transpose(x0_f32, (0, 2, 1)), (b, c, f, h, w))
 
             audio_denoised = None
@@ -1695,6 +1921,7 @@ def generate_video(
     max_tokens: int = 512,
     temperature: float = 0.7,
     image: Optional[str] = None,
+    video: Optional[str] = None,
     image_strength: float = 1.0,
     image_frame_idx: int = 0,
     tiling: str = "auto",
@@ -1714,6 +1941,10 @@ def generate_video(
     audio_file: Optional[str] = None,
     audio_start_time: float = 0.0,
     spatial_upscaler: Optional[str] = None,
+    # IC-LoRA parameters
+    video_conditioning: Optional[str] = None,             # path to reference video
+    conditioning_strength: float = 1.0,                    # 1.0 = keep ref clean
+    conditioning_attention_strength: float = 1.0,          # cross-attention weight [0,1]
 ):
     """Generate video using LTX-2 models.
 
@@ -1760,7 +1991,12 @@ def generate_video(
         PipelineType.DISTILLED,
         PipelineType.DEV_TWO_STAGE,
         PipelineType.DEV_TWO_STAGE_HQ,
+        PipelineType.KEYFRAME_INTERPOLATION,
+        PipelineType.IC_LORA,
     )
+    is_bfs = pipeline == PipelineType.BFS_VIDEO_TO_VIDEO
+    is_v2v = video is not None
+    
     divisor = 64 if is_two_stage else 32
     assert height % divisor == 0, f"Height must be divisible by {divisor}, got {height}"
     assert width % divisor == 0, f"Width must be divisible by {divisor}, got {width}"
@@ -1772,7 +2008,22 @@ def generate_video(
         )
         num_frames = adjusted_num_frames
 
-    is_i2v = image is not None
+    # Handle image parameter compatibility
+    # For I2V: image is a single path (first element if list)
+    # For keyframe-interpolation: image is a list of paths or tuples
+    is_keyframe_interpolation = pipeline in (
+        PipelineType.KEYFRAME_INTERPOLATION,
+        PipelineType.KEYFRAME_INTERPOLATION_FAST,
+    )
+    
+    if image is not None and isinstance(image, list):
+        # action="append" was used, image is a list
+        if not is_keyframe_interpolation and len(image) == 1:
+            # I2V with single image: extract the string
+            image = image[0]
+        # For keyframe-interpolation or multiple images, keep as list
+    
+    is_i2v = image is not None and not is_keyframe_interpolation and not is_v2v
     is_a2v = audio_file is not None
     if is_a2v and audio:
         raise ValueError(
@@ -1781,7 +2032,9 @@ def generate_video(
     # A2V implicitly enables audio path through the transformer
     if is_a2v:
         audio = True
-    mode_str = "I2V" if is_i2v else "T2V"
+    
+    # Determine mode string for display
+    mode_str = "V2V" if is_v2v else ("I2V" if is_i2v else "T2V")
     if is_a2v:
         mode_str = "A2V" + ("+I2V" if is_i2v else "")
     elif audio:
@@ -1792,6 +2045,10 @@ def generate_video(
         PipelineType.DEV: "DEV",
         PipelineType.DEV_TWO_STAGE: "DEV-TWO-STAGE",
         PipelineType.DEV_TWO_STAGE_HQ: "DEV-TWO-STAGE-HQ",
+        PipelineType.KEYFRAME_INTERPOLATION: "KEYFRAME-INTERPOLATION",
+        PipelineType.KEYFRAME_INTERPOLATION_FAST: "KEYFRAME-INTERPOLATION-FAST",
+        PipelineType.BFS_VIDEO_TO_VIDEO: "BFS-V2V",
+        PipelineType.IC_LORA: "IC-LORA",
     }
     pipeline_name = pipeline_names[pipeline]
     header = f"[bold cyan]🎬 [{pipeline_name}] [{mode_str}] {width}x{height} • {num_frames} frames[/]"
@@ -1909,6 +2166,7 @@ def generate_video(
         PipelineType.DEV,
         PipelineType.DEV_TWO_STAGE,
         PipelineType.DEV_TWO_STAGE_HQ,
+        PipelineType.KEYFRAME_INTERPOLATION,
     ):
         # Dev/dev-two-stage pipelines need positive and negative embeddings for CFG
         video_embeddings_pos, audio_embeddings_pos = text_encoder(
@@ -1925,7 +2183,7 @@ def generate_video(
             audio_embeddings_neg,
         )
         # For dev-two-stage, stage 2 uses single positive embedding (no CFG)
-        if pipeline in (PipelineType.DEV_TWO_STAGE, PipelineType.DEV_TWO_STAGE_HQ):
+        if pipeline in (PipelineType.DEV_TWO_STAGE, PipelineType.DEV_TWO_STAGE_HQ, PipelineType.KEYFRAME_INTERPOLATION):
             text_embeddings = video_embeddings_pos
     else:
         # Distilled pipeline - single embedding
@@ -2037,10 +2295,104 @@ def generate_video(
     # Pipeline-specific generation logic
     # ==========================================================================
 
+    # V2V: Load and encode input video (shared by all pipelines)
+    video_latents_initial = None
+    video_latents_stage1 = None
+    video_latents_stage2 = None
+    
+    if is_v2v:
+        if video is None:
+            raise ValueError("--video is required for V2V mode")
+        
+        with console.status(
+            "[blue]🎞️  Loading and encoding input video...[/]", spinner="dots"
+        ):
+            # Load VAE encoder
+            vae_encoder = VideoEncoder.from_pretrained(
+                model_path / "vae" / "encoder"
+            )
+            mx.eval(vae_encoder.parameters())
+            
+            if is_two_stage:
+                # Two-stage: encode at both stage1 and stage2 resolutions
+                # Stage 1: half resolution
+                s1_h, s1_w = stage1_h * 32, stage1_w * 32
+                video_frames_s1 = load_video_frames(
+                    video_path=video,
+                    height=s1_h,
+                    width=s1_w,
+                    num_frames=num_frames,
+                )
+                video_latents_stage1 = encode_video_to_latents(
+                    video_frames=video_frames_s1,
+                    vae_encoder=vae_encoder,
+                    dtype=model_dtype,
+                )
+                mx.eval(video_latents_stage1)
+                console.print(f"[dim]  Stage 1 latents: {video_latents_stage1.shape}[/]")
+                del video_frames_s1
+                
+                # Stage 2: full resolution (after upsampling)
+                s2_h, s2_w = stage2_h * 32, stage2_w * 32
+                video_frames_s2 = load_video_frames(
+                    video_path=video,
+                    height=s2_h,
+                    width=s2_w,
+                    num_frames=num_frames,
+                )
+                video_latents_stage2 = encode_video_to_latents(
+                    video_frames=video_frames_s2,
+                    vae_encoder=vae_encoder,
+                    dtype=model_dtype,
+                )
+                mx.eval(video_latents_stage2)
+                console.print(f"[dim]  Stage 2 latents: {video_latents_stage2.shape}[/]")
+                del video_frames_s2
+            else:
+                # Single-stage: encode at target resolution
+                video_frames = load_video_frames(
+                    video_path=video,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames,
+                )
+                console.print(f"[dim]  Loaded {video_frames.shape[0]} frames from {video}[/]")
+                
+                # For BFS: save frame 0 before encoding (will be used as guide image)
+                video_frame_0 = None
+                if pipeline == PipelineType.BFS_VIDEO_TO_VIDEO:
+                    video_frame_0 = video_frames[0:1]  # Save first frame
+                
+                video_latents_initial = encode_video_to_latents(
+                    video_frames=video_frames,
+                    vae_encoder=vae_encoder,
+                    dtype=model_dtype,
+                )
+                mx.eval(video_latents_initial)
+                console.print(f"[dim]  Encoded to latents: {video_latents_initial.shape}[/]")
+                del video_frames
+            
+            del vae_encoder
+            mx.clear_cache()
+        
+        console.print("[green]✓[/] Input video encoded to latents")
+
     if pipeline == PipelineType.DISTILLED:
         # ======================================================================
         # DISTILLED PIPELINE: Two-stage with upsampling
         # ======================================================================
+
+        # Merge LoRA for stage 1 (if provided)
+        distilled_lora_s1 = lora_strength_stage_1 if lora_strength_stage_1 is not None else 0.25
+        distilled_lora_s2 = lora_strength_stage_2 if lora_strength_stage_2 is not None else 0.5
+        
+        if lora_path is not None:
+            with console.status(
+                f"[blue]Loading LoRA (stage 1, strength={distilled_lora_s1})...[/]",
+                spinner="dots",
+            ):
+                load_and_merge_lora(transformer, lora_path, strength=distilled_lora_s1)
+            console.print(f"[green]✓[/] LoRA loaded (stage 1 strength: {distilled_lora_s1})")
 
         # Load VAE encoder for I2V
         stage1_image_latent = None
@@ -2097,7 +2449,7 @@ def generate_video(
         )
         mx.eval(audio_positions, audio_latents)
 
-        # Apply I2V conditioning
+        # Apply I2V conditioning or V2V initialization
         state1 = None
         if is_i2v and stage1_image_latent is not None:
             latent_shape = (1, 128, latent_frames, stage1_h, stage1_w)
@@ -2121,6 +2473,29 @@ def generate_video(
                 + state1.latent * (mx.array(1.0, dtype=model_dtype) - scaled_mask),
                 clean_latent=state1.clean_latent,
                 denoise_mask=state1.denoise_mask,
+            )
+            latents = state1.latent
+            mx.eval(latents)
+        elif is_v2v and video_latents_stage1 is not None:
+            # V2V Stage 1: Initialize with partial noising to preserve video structure
+            # Following official distilled.py stage 2 logic which uses:
+            # noise_scale = STAGE_2_SIGMAS[0] = 0.909375
+            # For stage 1 V2V, use the same noise_scale to preserve video structure
+            clean_latent = video_latents_stage1.astype(model_dtype)
+            noise = mx.random.normal(clean_latent.shape, dtype=model_dtype)
+            
+            # Use STAGE_2_SIGMAS[0] as noise_scale (0.909375)
+            # This preserves ~9% of the original video structure
+            noise_scale = mx.array(STAGE_2_SIGMAS[0], dtype=model_dtype)
+            
+            # GaussianNoiser formula: latent = noise * noise_scale + initial * (1 - noise_scale)
+            latents = noise * noise_scale + clean_latent * (mx.array(1.0, dtype=model_dtype) - noise_scale)
+            
+            # Create LatentState for V2V with full regeneration
+            state1 = LatentState(
+                latent=latents,
+                clean_latent=clean_latent,
+                denoise_mask=mx.ones((1, 1, latent_frames, 1, 1), dtype=model_dtype),
             )
             latents = state1.latent
             mx.eval(latents)
@@ -2168,6 +2543,19 @@ def generate_video(
             del upsampler
             mx.clear_cache()
         console.print("[green]✓[/] Latents upsampled")
+
+        # Merge additional LoRA for stage 2 (additive: e.g., 0.25 + 0.25 = 0.5 total)
+        if lora_path is not None:
+            additional_strength = distilled_lora_s2 - distilled_lora_s1
+            if additional_strength > 0:
+                with console.status(
+                    f"[blue]Adjusting LoRA (stage 2, total={distilled_lora_s2})...[/]",
+                    spinner="dots",
+                ):
+                    load_and_merge_lora(
+                        transformer, lora_path, strength=additional_strength
+                    )
+                console.print(f"[green]✓[/] LoRA adjusted (stage 2 total strength: {distilled_lora_s2})")
 
         # Stage 2
         console.print(
@@ -2287,7 +2675,7 @@ def generate_video(
         )
         mx.eval(audio_positions, audio_latents)
 
-        # Initialize latents with optional I2V conditioning
+        # Initialize latents with optional I2V conditioning or V2V initialization
         video_state = None
         video_latent_shape = (1, 128, latent_frames, latent_h, latent_w)
         if is_i2v and image_latent is not None:
@@ -2311,6 +2699,12 @@ def generate_video(
                 denoise_mask=video_state.denoise_mask,
             )
             latents = video_state.latent
+            mx.eval(latents)
+        elif is_v2v and video_latents_initial is not None:
+            # V2V DEV: Use encoded video as initial latent without additional noising
+            # The denoising process will naturally add and remove noise through the sigma schedule
+            # This is the simplest approach - let the model handle the transformation
+            latents = video_latents_initial.astype(model_dtype)
             mx.eval(latents)
         else:
             latents = mx.random.normal(video_latent_shape, dtype=model_dtype)
@@ -2583,6 +2977,486 @@ def generate_video(
             audio_embeddings=audio_embeddings_pos,
             audio_frozen=is_a2v,
         )
+
+    elif pipeline == PipelineType.KEYFRAME_INTERPOLATION:
+        # ======================================================================
+        # KEYFRAME INTERPOLATION PIPELINE:
+        #   Stage 1: Dev denoising at half resolution with CFG + keyframe guiding
+        #   Upsample: 2x spatial via LatentUpsampler
+        #   Stage 2: Distilled denoising at full resolution with LoRA + keyframe guiding
+        # Key difference from DEV_TWO_STAGE: Uses guiding latents (virtual frames)
+        # instead of replacing latents for smooth interpolation between keyframes.
+        # ======================================================================
+
+        # Validate keyframes
+        if not image or len(image) < 1:
+            raise ValueError(
+                "Keyframe interpolation requires at least one keyframe image. "
+                "Use --image <path> or --keyframe <path> <frame_idx> [strength]."
+            )
+
+        # Detect keyframe format: list of tuples (manual) or list of strings (auto)
+        is_manual_mode = isinstance(image[0], tuple)
+        
+        # Parse keyframes into (path, frame_idx, strength) tuples
+        keyframe_specs = []
+        if is_manual_mode:
+            # Manual mode: --keyframe path frame_idx [strength]
+            keyframe_specs = image  # Already in (path, frame_idx, strength) format
+            # Validate frame indices
+            for path, frame_idx, strength in keyframe_specs:
+                if frame_idx < 0 or frame_idx >= num_frames:
+                    raise ValueError(
+                        f"Frame index {frame_idx} out of range [0, {num_frames-1}]"
+                    )
+                if strength < 0.0 or strength > 1.0:
+                    raise ValueError(
+                        f"Strength {strength} out of range [0.0, 1.0]"
+                    )
+        else:
+            # Auto mode: --image path (distribute evenly)
+            for idx, img_path in enumerate(image):
+                if len(image) == 1:
+                    frame_idx = 0
+                elif len(image) == 2:
+                    frame_idx = 0 if idx == 0 else num_frames - 1
+                else:
+                    # Multiple keyframes: distribute evenly
+                    frame_idx = int(idx * (num_frames - 1) / (len(image) - 1))
+                keyframe_specs.append((img_path, frame_idx, image_strength))
+
+        # Load VAE encoder and encode keyframes for both stages
+        stage1_keyframe_conditionings = []
+        stage2_keyframe_conditionings = []
+        
+        with console.status(
+            "[blue]🖼️  Loading VAE encoder and encoding keyframes...[/]", spinner="dots"
+        ):
+            vae_encoder = VideoEncoder.from_pretrained(
+                model_path / "vae" / "encoder"
+            )
+
+            # Encode keyframes for stage 1 (half resolution)
+            s1_h, s1_w = stage1_h * 32, stage1_w * 32
+            for img_path, frame_idx, strength in keyframe_specs:
+                input_image = load_image(
+                    img_path, height=s1_h, width=s1_w, dtype=model_dtype
+                )
+                image_tensor = prepare_image_for_encoding(
+                    input_image, s1_h, s1_w, dtype=model_dtype
+                )
+                keyframe_latent = vae_encoder(image_tensor)
+                mx.eval(keyframe_latent)
+                
+                from mlx_video.models.ltx_2.conditioning import VideoConditionByKeyframeIndex
+                stage1_keyframe_conditionings.append(
+                    VideoConditionByKeyframeIndex(
+                        keyframe_latent=keyframe_latent,
+                        frame_idx=frame_idx,
+                        strength=strength,
+                    )
+                )
+
+            # Encode keyframes for stage 2 (full resolution)
+            s2_h, s2_w = stage2_h * 32, stage2_w * 32
+            for img_path, frame_idx, strength in keyframe_specs:
+                input_image = load_image(
+                    img_path, height=s2_h, width=s2_w, dtype=model_dtype
+                )
+                image_tensor = prepare_image_for_encoding(
+                    input_image, s2_h, s2_w, dtype=model_dtype
+                )
+                keyframe_latent = vae_encoder(image_tensor)
+                mx.eval(keyframe_latent)
+                
+                stage2_keyframe_conditionings.append(
+                    VideoConditionByKeyframeIndex(
+                        keyframe_latent=keyframe_latent,
+                        frame_idx=frame_idx,
+                        strength=strength,
+                    )
+                )
+
+            del vae_encoder
+            mx.clear_cache()
+        console.print(f"[green]✓[/] {len(keyframe_specs)} keyframe(s) encoded")
+
+        # Stage 1: Dev denoising at reduced resolution with CFG + keyframe guiding
+        sigmas = ltx2_scheduler(steps=num_inference_steps)
+        mx.eval(sigmas)
+        console.print(
+            f"[dim]Stage 1 sigma schedule: {sigmas[0].item():.4f} → {sigmas[-2].item():.4f} → {sigmas[-1].item():.4f}[/]"
+        )
+
+        console.print(
+            f"\n[bold yellow]⚡ Stage 1:[/] Keyframe interpolation at {stage1_w*32}x{stage1_h*32} ({num_inference_steps} steps, CFG={cfg_scale})"
+        )
+        mx.random.seed(seed)
+
+        # Create position grid for real frames
+        positions = create_position_grid(1, latent_frames, stage1_h, stage1_w)
+        mx.eval(positions)
+
+        # Add positions for virtual frames (keyframes)
+        from mlx_video.models.ltx_2.conditioning import add_keyframe_positions
+        keyframe_indices = [cond.frame_idx for cond in stage1_keyframe_conditionings]
+        positions = add_keyframe_positions(
+            positions,
+            keyframe_indices,
+            height=stage1_h,
+            width=stage1_w,
+            fps=fps,
+        )
+        mx.eval(positions)
+
+        # Always init audio latents/positions
+        audio_positions = create_audio_position_grid(1, audio_frames)
+        audio_latents = (
+            a2v_audio_latents
+            if is_a2v
+            else mx.random.normal(
+                (1, AUDIO_LATENT_CHANNELS, audio_frames, AUDIO_MEL_BINS),
+                dtype=model_dtype,
+            )
+        )
+        mx.eval(audio_positions, audio_latents)
+
+        # Initialize latents with keyframe guiding
+        stage1_shape = (1, 128, latent_frames, stage1_h, stage1_w)
+        latents = mx.random.normal(stage1_shape, dtype=model_dtype)
+        mx.eval(latents)
+
+        # Create state and apply keyframe conditioning (guiding latents)
+        from mlx_video.models.ltx_2.conditioning import (
+            apply_keyframe_conditioning,
+            remove_virtual_frames,
+        )
+        state1 = LatentState(
+            latent=latents,
+            clean_latent=mx.zeros_like(latents),
+            denoise_mask=mx.ones((1, 1, latent_frames, 1, 1), dtype=model_dtype),
+        )
+        state1 = apply_keyframe_conditioning(state1, stage1_keyframe_conditionings)
+
+        # Add noise to the state (including virtual frames)
+        noise = mx.random.normal(state1.latent.shape, dtype=model_dtype)
+        noise_scale = sigmas[0]
+        scaled_mask = state1.denoise_mask * noise_scale
+        state1 = LatentState(
+            latent=noise * scaled_mask
+            + state1.latent * (mx.array(1.0, dtype=model_dtype) - scaled_mask),
+            clean_latent=state1.clean_latent,
+            denoise_mask=state1.denoise_mask,
+        )
+        latents = state1.latent
+        mx.eval(latents)
+
+        # Stage 1: Joint AV denoising with keyframe guiding
+        latents, audio_latents = denoise_dev_av(
+            latents,
+            audio_latents,
+            positions,
+            audio_positions,
+            video_embeddings_pos,
+            video_embeddings_neg,
+            audio_embeddings_pos,
+            audio_embeddings_neg,
+            transformer,
+            sigmas,
+            cfg_scale=cfg_scale,
+            audio_cfg_scale=audio_cfg_scale,
+            cfg_rescale=cfg_rescale,
+            verbose=verbose,
+            video_state=state1,
+            use_apg=use_apg,
+            apg_eta=apg_eta,
+            apg_norm_threshold=apg_norm_threshold,
+            stg_scale=stg_scale,
+            stg_video_blocks=stg_blocks,
+            stg_audio_blocks=stg_blocks,
+            modality_scale=modality_scale,
+            audio_frozen=is_a2v,
+        )
+
+        # Remove virtual frames after denoising
+        state1 = LatentState(
+            latent=latents,
+            clean_latent=state1.clean_latent,
+            denoise_mask=state1.denoise_mask,
+        )
+        state1 = remove_virtual_frames(state1, num_real_frames=latent_frames)
+        latents = state1.latent
+        mx.eval(latents, audio_latents)
+
+        # Upsample latents
+        with console.status(
+            f"[magenta]🔍 Upsampling latents {upscaler_scale}x...[/]", spinner="dots"
+        ):
+            if upscaler_path is None or not upscaler_path.exists():
+                raise FileNotFoundError(f"No spatial upscaler found in {model_path}")
+            upsampler, upscaler_scale = load_upsampler(str(upscaler_path))
+            mx.eval(upsampler.parameters())
+
+            vae_decoder = VideoDecoder.from_pretrained(
+                str(model_path / "vae" / "decoder")
+            )
+
+            latents = upsample_latents(
+                latents,
+                upsampler,
+                vae_decoder.per_channel_statistics.mean,
+                vae_decoder.per_channel_statistics.std,
+            )
+            mx.eval(latents)
+
+            del upsampler
+            mx.clear_cache()
+        console.print("[green]✓[/] Latents upsampled")
+
+        # Merge LoRA weights for stage 2 (distilled refinement)
+        if lora_path is None:
+            # Auto-detect LoRA file in model directory
+            lora_files = sorted(model_path.glob("*distilled-lora*.safetensors"))
+            if lora_files:
+                lora_path = str(lora_files[0])
+                console.print(f"[dim]Auto-detected LoRA: {Path(lora_path).name}[/]")
+            else:
+                console.print(
+                    "[yellow]⚠️  No LoRA file found. Stage 2 will use base weights.[/]"
+                )
+
+        if lora_path is not None:
+            with console.status(
+                "[blue]🔧 Merging distilled LoRA weights...[/]", spinner="dots"
+            ):
+                load_and_merge_lora(transformer, lora_path, strength=lora_strength)
+
+        # Stage 2: Distilled refinement at full resolution with keyframe guiding
+        console.print(
+            f"\n[bold yellow]⚡ Stage 2:[/] Distilled refining at {width}x{height} (3 steps, no CFG)"
+        )
+        
+        # Create position grid for real frames
+        positions = create_position_grid(1, latent_frames, stage2_h, stage2_w)
+        mx.eval(positions)
+
+        # Add positions for virtual frames (keyframes)
+        keyframe_indices = [cond.frame_idx for cond in stage2_keyframe_conditionings]
+        positions = add_keyframe_positions(
+            positions,
+            keyframe_indices,
+            height=stage2_h,
+            width=stage2_w,
+            fps=fps,
+        )
+        mx.eval(positions)
+
+        # Re-noise latents for stage 2
+        noise_scale = mx.array(STAGE_2_SIGMAS[0], dtype=model_dtype)
+        one_minus_scale = mx.array(1.0 - STAGE_2_SIGMAS[0], dtype=model_dtype)
+        noise = mx.random.normal(latents.shape).astype(model_dtype)
+        latents = noise * noise_scale + latents * one_minus_scale
+        mx.eval(latents)
+
+        # Create state and apply keyframe conditioning for stage 2
+        state2 = LatentState(
+            latent=latents,
+            clean_latent=mx.zeros_like(latents),
+            denoise_mask=mx.ones((1, 1, latent_frames, 1, 1), dtype=model_dtype),
+        )
+        state2 = apply_keyframe_conditioning(state2, stage2_keyframe_conditionings)
+        latents = state2.latent
+        mx.eval(latents)
+
+        # Re-noise audio at sigma=0.909375 for joint refinement (matches PyTorch)
+        if audio_latents is not None and not is_a2v:
+            audio_noise = mx.random.normal(audio_latents.shape, dtype=model_dtype)
+            audio_noise_scale = mx.array(STAGE_2_SIGMAS[0], dtype=model_dtype)
+            audio_latents = audio_noise * audio_noise_scale + audio_latents * (
+                mx.array(1.0, dtype=model_dtype) - audio_noise_scale
+            )
+            mx.eval(audio_latents)
+
+        # Joint video + audio refinement (no CFG, positive embeddings only)
+        latents, audio_latents = denoise_distilled(
+            latents,
+            positions,
+            text_embeddings,
+            transformer,
+            STAGE_2_SIGMAS,
+            verbose=verbose,
+            state=state2,
+            audio_latents=audio_latents,
+            audio_positions=audio_positions,
+            audio_embeddings=audio_embeddings_pos,
+            audio_frozen=is_a2v,
+        )
+
+        # Remove virtual frames after stage 2 denoising
+        state2 = LatentState(
+            latent=latents,
+            clean_latent=state2.clean_latent,
+            denoise_mask=state2.denoise_mask,
+        )
+        state2 = remove_virtual_frames(state2, num_real_frames=latent_frames)
+        latents = state2.latent
+        mx.eval(latents)
+
+    elif pipeline == PipelineType.KEYFRAME_INTERPOLATION_FAST:
+        # ======================================================================
+        # KEYFRAME INTERPOLATION FAST PIPELINE:
+        #   Single-stage: Distilled denoising at target resolution (8 steps)
+        #   Fast preview for testing keyframe positions
+        # ======================================================================
+
+        # Validate keyframes
+        if not image or len(image) < 1:
+            raise ValueError(
+                "Keyframe interpolation requires at least one keyframe image. "
+                "Use --image <path> or --keyframe <path> <frame_idx> [strength]."
+            )
+
+        # Detect keyframe format and parse
+        is_manual_mode = isinstance(image[0], tuple)
+        keyframe_specs = []
+        if is_manual_mode:
+            keyframe_specs = image
+            for path, frame_idx, strength in keyframe_specs:
+                if frame_idx < 0 or frame_idx >= num_frames:
+                    raise ValueError(f"Frame index {frame_idx} out of range [0, {num_frames-1}]")
+                if strength < 0.0 or strength > 1.0:
+                    raise ValueError(f"Strength {strength} out of range [0.0, 1.0]")
+        else:
+            for idx, img_path in enumerate(image):
+                if len(image) == 1:
+                    frame_idx = 0
+                elif len(image) == 2:
+                    frame_idx = 0 if idx == 0 else num_frames - 1
+                else:
+                    frame_idx = int(idx * (num_frames - 1) / (len(image) - 1))
+                keyframe_specs.append((img_path, frame_idx, image_strength))
+
+        # Load VAE encoder and encode keyframes
+        keyframe_conditionings = []
+        with console.status(
+            "[blue]🖼️  Loading VAE encoder and encoding keyframes...[/]", spinner="dots"
+        ):
+            vae_encoder = VideoEncoder.from_pretrained(
+                model_path / "vae" / "encoder"
+            )
+
+            target_h, target_w = latent_h * 32, latent_w * 32
+            for img_path, frame_idx, strength in keyframe_specs:
+                input_image = load_image(
+                    img_path, height=target_h, width=target_w, dtype=model_dtype
+                )
+                image_tensor = prepare_image_for_encoding(
+                    input_image, target_h, target_w, dtype=model_dtype
+                )
+                keyframe_latent = vae_encoder(image_tensor)
+                mx.eval(keyframe_latent)
+                
+                from mlx_video.models.ltx_2.conditioning import VideoConditionByKeyframeIndex
+                keyframe_conditionings.append(
+                    VideoConditionByKeyframeIndex(
+                        keyframe_latent=keyframe_latent,
+                        frame_idx=frame_idx,
+                        strength=strength,
+                    )
+                )
+
+            del vae_encoder
+            mx.clear_cache()
+        console.print(f"[green]✓[/] {len(keyframe_specs)} keyframe(s) encoded")
+
+        # Single-stage distilled denoising
+        console.print(
+            f"\n[bold yellow]⚡ Fast:[/] Keyframe interpolation at {width}x{height} (8 steps)"
+        )
+        mx.random.seed(seed)
+
+        # Create position grid
+        positions = create_position_grid(1, latent_frames, latent_h, latent_w)
+        mx.eval(positions)
+
+        # Add positions for virtual frames
+        from mlx_video.models.ltx_2.conditioning import add_keyframe_positions
+        keyframe_indices = [cond.frame_idx for cond in keyframe_conditionings]
+        positions = add_keyframe_positions(
+            positions,
+            keyframe_indices,
+            height=latent_h,
+            width=latent_w,
+            fps=fps,
+        )
+        mx.eval(positions)
+
+        # Init audio
+        audio_positions = create_audio_position_grid(1, audio_frames)
+        audio_latents = (
+            a2v_audio_latents
+            if is_a2v
+            else mx.random.normal(
+                (1, AUDIO_LATENT_CHANNELS, audio_frames, AUDIO_MEL_BINS),
+                dtype=model_dtype,
+            )
+        )
+        mx.eval(audio_positions, audio_latents)
+
+        # Initialize latents with keyframe guiding
+        latent_shape = (1, 128, latent_frames, latent_h, latent_w)
+        latents = mx.random.normal(latent_shape, dtype=model_dtype)
+        mx.eval(latents)
+
+        # Create state and apply keyframe conditioning
+        from mlx_video.models.ltx_2.conditioning import (
+            apply_keyframe_conditioning,
+            remove_virtual_frames,
+        )
+        state = LatentState(
+            latent=latents,
+            clean_latent=mx.zeros_like(latents),
+            denoise_mask=mx.ones((1, 1, latent_frames, 1, 1), dtype=model_dtype),
+        )
+        state = apply_keyframe_conditioning(state, keyframe_conditionings)
+
+        # Add noise
+        noise = mx.random.normal(state.latent.shape, dtype=model_dtype)
+        noise_scale = mx.array(STAGE_1_SIGMAS[0], dtype=model_dtype)
+        scaled_mask = state.denoise_mask * noise_scale
+        state = LatentState(
+            latent=noise * scaled_mask
+            + state.latent * (mx.array(1.0, dtype=model_dtype) - scaled_mask),
+            clean_latent=state.clean_latent,
+            denoise_mask=state.denoise_mask,
+        )
+        latents = state.latent
+        mx.eval(latents)
+
+        # Denoise with distilled model (8 steps)
+        latents, audio_latents = denoise_distilled(
+            latents,
+            positions,
+            text_embeddings,
+            transformer,
+            STAGE_1_SIGMAS,
+            verbose=verbose,
+            state=state,
+            audio_latents=audio_latents,
+            audio_positions=audio_positions,
+            audio_embeddings=audio_embeddings,
+            audio_frozen=is_a2v,
+        )
+
+        # Remove virtual frames
+        state = LatentState(
+            latent=latents,
+            clean_latent=state.clean_latent,
+            denoise_mask=state.denoise_mask,
+        )
+        state = remove_virtual_frames(state, num_real_frames=latent_frames)
+        latents = state.latent
+        mx.eval(latents)
 
     elif pipeline == PipelineType.DEV_TWO_STAGE_HQ:
         # ======================================================================
@@ -2858,12 +3732,317 @@ def generate_video(
             audio_frozen=is_a2v,
         )
 
+    elif pipeline == PipelineType.BFS_VIDEO_TO_VIDEO:
+        # ======================================================================
+        # BFS VIDEO-TO-VIDEO PIPELINE:
+        #   Single-stage DISTILLED pipeline (8 steps, CFG=1.0)
+        #   Input: Concatenated video (832x512: left 256px reference, right 576px target)
+        #   Uses BFS LoRA + image guide (frame 0) for face swap
+        # ======================================================================
+        
+        if not is_v2v:
+            raise ValueError(
+                "BFS pipeline requires --video (concatenated video with reference face on left)"
+            )
+        
+        if lora_path is None:
+            raise ValueError(
+                "BFS pipeline requires --lora-path (BFS LoRA weights)"
+            )
+        
+        console.print(
+            f"\n[bold yellow]⚡ BFS V2V:[/] Face swap at {width}x{height} (8 steps, CFG={cfg_scale})"
+        )
+        
+        # Load and merge BFS LoRA
+        bfs_lora_strength = lora_strength
+        with console.status(
+            f"[blue]🔧 Loading BFS LoRA (strength={bfs_lora_strength})...[/]",
+            spinner="dots",
+        ):
+            load_and_merge_lora(transformer, lora_path, strength=bfs_lora_strength)
+        console.print(f"[green]✓[/] BFS LoRA loaded")
+        
+        # BFS uses single-stage at target resolution (no upsampling)
+        mx.random.seed(seed)
+        
+        latent_h = height // 32
+        latent_w = width // 32
+        latent_frames = 1 + (num_frames - 1) // 8
+        
+        positions = create_position_grid(1, latent_frames, latent_h, latent_w)
+        mx.eval(positions)
+        
+        # Audio latents (required by model)
+        audio_positions = create_audio_position_grid(1, audio_frames)
+        audio_latents = mx.random.normal(
+            (1, AUDIO_LATENT_CHANNELS, audio_frames, AUDIO_MEL_BINS),
+            dtype=model_dtype,
+        )
+        mx.eval(audio_positions, audio_latents)
+        
+        # BFS: BEST VERSION - pure noise target + full video guide
+        # target and guide must have identical spatial dims for temporal concat.
+        # Both are 832x512 (latent: 16x26).
+        # After denoising we output the full 832x512 and save frame-0 as a
+        # debug image so we can visually confirm which spatial region holds
+        # the face-swap result before applying the final crop.
+        
+        # Create pure noise target (same shape as guide: 832x512)
+        noise = mx.random.normal(video_latents_initial.shape, dtype=model_dtype)
+        initial_sigma = mx.array(STAGE_1_SIGMAS[0], dtype=model_dtype)
+        target_latent = noise * initial_sigma
+        
+        # Use encoded concatenated video as guide (all frames)
+        guide_latent = video_latents_initial.astype(model_dtype)  # (1,128,F,16,26)
+        
+        # Append guide to target in temporal dimension
+        latent_image = mx.concatenate([target_latent, guide_latent], axis=2)
+        
+        # Create noise mask
+        target_mask = mx.ones((1, 1, latent_frames, 1, 1), dtype=model_dtype)
+        guide_mask = mx.zeros((1, 1, latent_frames, 1, 1), dtype=model_dtype)
+        noise_mask = mx.concatenate([target_mask, guide_mask], axis=2)
+        
+        # Create LatentState
+        state = LatentState(
+            latent=latent_image,
+            clean_latent=mx.concatenate([mx.zeros_like(target_latent), guide_latent], axis=2),
+            denoise_mask=noise_mask,
+        )
+        mx.eval(state.latent, state.clean_latent, state.denoise_mask)
+        
+        # Create positions: guide frames share same spatial positions as target
+        base_positions = create_position_grid(1, latent_frames, latent_h, latent_w)
+        positions = mx.concatenate([base_positions, base_positions], axis=2)
+        mx.eval(positions)
+        
+        console.print(f"[dim]  BFS: {latent_frames} noise target (832x512) + {latent_frames} guide (832x512) = {latent_frames * 2} total[/]")
+        console.print(f"[dim]  Target latent shape: {target_latent.shape}[/]")
+        console.print(f"[dim]  Target mask=1.0 (denoise), Guide mask=0.0 (preserve)[/]")
+        console.print(f"[dim]  BFS LoRA (strength={bfs_lora_strength}) + 8-step denoising[/]")
+        
+        # Denoise using DISTILLED pipeline
+        latents, audio_latents = denoise_distilled(
+            state.latent,
+            positions,
+            text_embeddings,
+            transformer,
+            STAGE_1_SIGMAS,  # 8 steps
+            verbose=verbose,
+            state=state,
+            audio_latents=audio_latents,
+            audio_positions=audio_positions,
+            audio_embeddings=audio_embeddings,
+            audio_frozen=False,
+        )
+        
+        # Crop guide frames (last F frames in temporal dimension)  
+        latents = latents[:, :, :latent_frames, :, :]
+        mx.eval(latents)
+        console.print(f"[dim]  Cropped guide frames → latent shape: {latents.shape}[/]")
+        
+        # NO spatial crop: official BFSNodes keeps canvas at original size (512x512).
+        # The model fills the entire canvas with face-swapped content.
+        # Output latent is already (1, 128, F, 16, 16) = 512x512.
+        
+        console.print(f"[green]✓[/] BFS denoising complete — output {width}x{height}")
+        
+        # Load VAE decoder for final decoding
+        vae_decoder = VideoDecoder.from_pretrained(
+            str(model_path / "vae" / "decoder")
+        )
+
+    elif pipeline == PipelineType.IC_LORA:
+        # ======================================================================
+        # IC-LORA PIPELINE:
+        #   Stage 1: DISTILLED (half res, 8 steps) + IC reference token concat
+        #   Stage 2: DISTILLED (full res, 3 steps) without reference (official)
+        # ======================================================================
+        from mlx_video.models.ltx_2.ic_lora_conditioning import (
+            prepare_ref_tokens,
+            read_lora_downscale_factor,
+        )
+
+        if lora_path is None:
+            raise ValueError("IC-LoRA pipeline requires --lora-path (IC-LoRA safetensors)")
+        if video_conditioning is None:
+            raise ValueError(
+                "IC-LoRA pipeline requires --video-conditioning (path to reference video)"
+            )
+
+        # ---- LoRA stage-1 strength -----------------------------------------------
+        ic_lora_s1 = lora_strength_stage_1 if lora_strength_stage_1 is not None else 0.25
+        ic_lora_s2 = lora_strength_stage_2 if lora_strength_stage_2 is not None else 0.5
+
+        with console.status(
+            f"[blue]Loading IC-LoRA (stage 1, strength={ic_lora_s1})...[/]",
+            spinner="dots",
+        ):
+            downscale_factor = read_lora_downscale_factor(lora_path)
+            load_and_merge_lora(transformer, lora_path, strength=ic_lora_s1)
+        console.print(
+            f"[green]✓[/] IC-LoRA loaded (downscale_factor={downscale_factor}, stage-1 strength={ic_lora_s1})"
+        )
+
+        # ---- Encode reference video ----------------------------------------------
+        ref_h = stage1_h // downscale_factor  # latent height of reference
+        ref_w = stage1_w // downscale_factor  # latent width of reference
+        ref_px_h = ref_h * 32
+        ref_px_w = ref_w * 32
+
+        console.print(
+            f"[blue]🎞️  Encoding reference video at {ref_px_w}x{ref_px_h}...[/]"
+        )
+        with console.status("[blue]Loading VAE encoder...[/]", spinner="dots"):
+            vae_encoder = VideoEncoder.from_pretrained(model_path / "vae" / "encoder")
+
+        ref_video_frames = load_video_frames(
+            video_conditioning, height=ref_px_h, width=ref_px_w, num_frames=num_frames
+        )
+        ref_latent = encode_video_to_latents(ref_video_frames, vae_encoder, dtype=model_dtype)
+        del vae_encoder, ref_video_frames
+        mx.clear_cache()
+        console.print(f"[green]✓[/] Reference latent: {ref_latent.shape}")
+
+        # ---- Prepare IC-LoRA conditioning tensors --------------------------------
+        latent_shape = (1, 128, latent_frames, stage1_h, stage1_w)
+        n_target = latent_frames * stage1_h * stage1_w
+
+        with console.status("[blue]Preparing IC-LoRA conditioning...[/]", spinner="dots"):
+            ic_cond = prepare_ref_tokens(
+                ref_latent=ref_latent,
+                n_target=n_target,
+                fps=float(fps),
+                downscale_factor=downscale_factor,
+                strength=conditioning_strength,
+                conditioning_attention_strength=conditioning_attention_strength,
+                temporal_scale=8,
+                spatial_scale=32,
+                causal_fix=True,
+                dtype=model_dtype,
+            )
+        console.print(
+            f"[green]✓[/] IC ref tokens: {ic_cond['ref_tokens'].shape}, "
+            f"attention mask: {ic_cond['attention_mask'].shape}"
+        )
+
+        # ---- Stage 1 (IC-conditioned) -------------------------------------------
+        console.print(
+            f"\n[bold yellow]⚡ IC-LoRA Stage 1:[/] Generating at {stage1_w*32}x{stage1_h*32} (8 steps, with ref)"
+        )
+        mx.random.seed(seed)
+        positions = create_position_grid(1, latent_frames, stage1_h, stage1_w, fps=float(fps))
+        mx.eval(positions)
+
+        audio_positions = create_audio_position_grid(1, audio_frames)
+        audio_latents_ic = mx.random.normal(
+            (1, AUDIO_LATENT_CHANNELS, audio_frames, AUDIO_MEL_BINS)
+        ).astype(model_dtype)
+        mx.eval(audio_positions, audio_latents_ic)
+
+        latents = mx.random.normal(latent_shape, dtype=model_dtype)
+        mx.eval(latents)
+
+        latents, audio_latents = denoise_distilled(
+            latents,
+            positions,
+            text_embeddings,
+            transformer,
+            STAGE_1_SIGMAS,
+            verbose=verbose,
+            state=None,
+            audio_latents=audio_latents_ic,
+            audio_positions=audio_positions,
+            audio_embeddings=audio_embeddings,
+            audio_frozen=False,
+            ic_ref_tokens=ic_cond["ref_tokens"],
+            ic_ref_positions=ic_cond["ref_positions"],
+            ic_ref_timestep_scale=ic_cond["ref_timestep_scale"],
+            ic_attention_mask=ic_cond["attention_mask"],
+        )
+
+        # ---- Upsample -----------------------------------------------------------
+        with console.status(
+            f"[magenta]🔍 Upsampling latents {upscaler_scale}x...[/]", spinner="dots"
+        ):
+            if upscaler_path is None or not upscaler_path.exists():
+                raise FileNotFoundError(f"No spatial upscaler found in {model_path}")
+            upsampler, upscaler_scale = load_upsampler(str(upscaler_path))
+            mx.eval(upsampler.parameters())
+
+            vae_decoder = VideoDecoder.from_pretrained(
+                str(model_path / "vae" / "decoder")
+            )
+
+            latents = upsample_latents(
+                latents,
+                upsampler,
+                vae_decoder.per_channel_statistics.mean,
+                vae_decoder.per_channel_statistics.std,
+            )
+            mx.eval(latents)
+            del upsampler
+            mx.clear_cache()
+        console.print("[green]✓[/] Latents upsampled")
+
+        # ---- Bump LoRA to stage-2 strength ----------------------------------------
+        additional_strength = ic_lora_s2 - ic_lora_s1
+        if lora_path is not None and additional_strength > 0:
+            with console.status(
+                f"[blue]Adjusting IC-LoRA (stage 2, total={ic_lora_s2})...[/]",
+                spinner="dots",
+            ):
+                load_and_merge_lora(transformer, lora_path, strength=additional_strength)
+            console.print(f"[green]✓[/] IC-LoRA adjusted (stage-2 total strength: {ic_lora_s2})")
+
+        # ---- Stage 2 (no ref, matches official stage-2 conditionings) -----------
+        console.print(
+            f"\n[bold yellow]⚡ IC-LoRA Stage 2:[/] Refining at {stage2_w*32}x{stage2_h*32} (3 steps, no ref)"
+        )
+        positions = create_position_grid(1, latent_frames, stage2_h, stage2_w, fps=float(fps))
+        mx.eval(positions)
+
+        noise_scale = mx.array(STAGE_2_SIGMAS[0], dtype=model_dtype)
+        one_minus_scale = mx.array(1.0 - STAGE_2_SIGMAS[0], dtype=model_dtype)
+        noise = mx.random.normal(latents.shape).astype(model_dtype)
+        latents = noise * noise_scale + latents * one_minus_scale
+        mx.eval(latents)
+
+        audio_noise = mx.random.normal(audio_latents.shape, dtype=model_dtype)
+        audio_latents = audio_noise * noise_scale + audio_latents * one_minus_scale
+        mx.eval(audio_latents)
+
+        latents, audio_latents = denoise_distilled(
+            latents,
+            positions,
+            text_embeddings,
+            transformer,
+            STAGE_2_SIGMAS,
+            verbose=verbose,
+            state=None,
+            audio_latents=audio_latents,
+            audio_positions=audio_positions,
+            audio_embeddings=audio_embeddings,
+            audio_frozen=False,
+            # Stage 2: no IC conditioning (matches official ICLoraPipeline stage-2)
+        )
+        console.print("[green]✓[/] IC-LoRA generation complete")
+
     del transformer
     mx.clear_cache()
 
     # ==========================================================================
     # Decode and save outputs (common to both pipelines)
     # ==========================================================================
+
+    # Load VAE decoder if not already loaded
+    if 'vae_decoder' not in locals():
+        with console.status("[blue]Loading VAE decoder...[/]", spinner="dots"):
+            vae_decoder = VideoDecoder.from_pretrained(
+                str(model_path / "vae" / "decoder")
+            )
+        console.print("[green]✓[/] VAE decoder loaded")
 
     console.print("\n[blue]🎞️  Decoding video...[/]")
 
@@ -2949,6 +4128,7 @@ def generate_video(
         console.print("[dim]  Tiling: disabled[/]")
         video = vae_decoder(latents)
     mx.eval(video)
+    
     mx.clear_cache()
 
     # Close stream writer
@@ -3110,8 +4290,8 @@ Examples:
         "--pipeline",
         type=str,
         default="distilled",
-        choices=["distilled", "dev", "dev-two-stage", "dev-two-stage-hq"],
-        help="Pipeline type: distilled (fast), dev (CFG), dev-two-stage (dev + LoRA), dev-two-stage-hq (res_2s + LoRA both stages)",
+        choices=["distilled", "dev", "dev-two-stage", "dev-two-stage-hq", "keyframe-interpolation", "keyframe-interpolation-fast", "bfs-video-to-video", "ic-lora"],
+        help="Pipeline type: distilled (fast), dev (CFG), dev-two-stage (dev + LoRA), dev-two-stage-hq (res_2s + LoRA both stages), keyframe-interpolation (multi-keyframe interpolation), keyframe-interpolation-fast (fast 8-step keyframe), bfs-video-to-video (BFS face swap), ic-lora (In-Context LoRA)",
     )
     parser.add_argument(
         "--negative-prompt",
@@ -3183,20 +4363,36 @@ Examples:
         "--image",
         "-i",
         type=str,
+        action="append",
         default=None,
-        help="Path to conditioning image for I2V",
+        help="Path to conditioning image (can be specified multiple times for keyframe interpolation)",
+    )
+    parser.add_argument(
+        "--video",
+        "-v",
+        type=str,
+        default=None,
+        help="Path to input video for V2V (video-to-video) generation",
     )
     parser.add_argument(
         "--image-strength",
         type=float,
         default=1.0,
-        help="Conditioning strength for I2V",
+        help="Conditioning strength for I2V and keyframe interpolation (default: 1.0)",
     )
     parser.add_argument(
         "--image-frame-idx",
         type=int,
         default=0,
         help="Frame index to condition for I2V",
+    )
+    parser.add_argument(
+        "--keyframe",
+        "-k",
+        action="append",
+        nargs="+",
+        metavar="ARG",
+        help="Keyframe for interpolation: --keyframe <path> <frame_idx> [strength]. Can be specified multiple times. Example: --keyframe start.jpg 0 1.0 --keyframe end.jpg 32 1.0",
     )
     parser.add_argument(
         "--tiling",
@@ -3306,13 +4502,65 @@ Examples:
         help="Spatial upscaler filename (e.g. ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors). "
         "Auto-detects x2 by default. Use this to select x1.5 or a specific version.",
     )
+    # IC-LoRA arguments
+    parser.add_argument(
+        "--video-conditioning",
+        type=str,
+        default=None,
+        metavar="VIDEO",
+        help="Path to reference video for IC-LoRA conditioning (ic-lora pipeline only)",
+    )
+    parser.add_argument(
+        "--conditioning-strength",
+        type=float,
+        default=1.0,
+        help="IC-LoRA conditioning strength: 1.0 = keep reference clean (default), 0.0 = fully noised",
+    )
+    parser.add_argument(
+        "--conditioning-attention-strength",
+        type=float,
+        default=1.0,
+        help="IC-LoRA cross-attention strength between target and reference tokens (default 1.0)",
+    )
     args = parser.parse_args()
+
+    # Process keyframe arguments
+    # --keyframe has priority over --image for keyframe-interpolation pipeline
+    if args.keyframe is not None:
+        # Parse keyframe arguments: [[path, frame_idx, strength?], ...]
+        keyframes_with_indices = []
+        for kf_args in args.keyframe:
+            if len(kf_args) < 2:
+                raise ValueError(
+                    f"--keyframe requires at least 2 arguments (path, frame_idx), got {len(kf_args)}"
+                )
+            path = kf_args[0]
+            try:
+                frame_idx = int(kf_args[1])
+            except ValueError:
+                raise ValueError(f"Frame index must be an integer, got '{kf_args[1]}'")
+            
+            strength = float(kf_args[2]) if len(kf_args) > 2 else args.image_strength
+            
+            keyframes_with_indices.append((path, frame_idx, strength))
+        
+        # Override image parameter with keyframe data
+        # Store as list of tuples for keyframe-interpolation pipeline
+        args.image = keyframes_with_indices
+    elif args.image is not None and args.pipeline == "keyframe-interpolation":
+        # --image mode: auto-distribute frames
+        # Keep as list of paths, will be processed in generate_video
+        pass
 
     pipeline_map = {
         "distilled": PipelineType.DISTILLED,
         "dev": PipelineType.DEV,
         "dev-two-stage": PipelineType.DEV_TWO_STAGE,
         "dev-two-stage-hq": PipelineType.DEV_TWO_STAGE_HQ,
+        "keyframe-interpolation": PipelineType.KEYFRAME_INTERPOLATION,
+        "keyframe-interpolation-fast": PipelineType.KEYFRAME_INTERPOLATION_FAST,
+        "bfs-video-to-video": PipelineType.BFS_VIDEO_TO_VIDEO,
+        "ic-lora": PipelineType.IC_LORA,
     }
     pipeline = pipeline_map[args.pipeline]
 
@@ -3338,6 +4586,7 @@ Examples:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         image=args.image,
+        video=args.video,
         image_strength=args.image_strength,
         image_frame_idx=args.image_frame_idx,
         tiling=args.tiling,
@@ -3357,6 +4606,9 @@ Examples:
         audio_file=args.audio_file,
         audio_start_time=args.audio_start_time,
         spatial_upscaler=args.spatial_upscaler,
+        video_conditioning=args.video_conditioning,
+        conditioning_strength=args.conditioning_strength,
+        conditioning_attention_strength=args.conditioning_attention_strength,
     )
 
 
